@@ -41,6 +41,8 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import java.util.zip.CRC32
 import javax.inject.Inject
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.nextcloud.talk.utils.NotificationCoordinator
 
 @AutoInjector(NextcloudTalkApplication::class)
 class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationService") {
@@ -73,10 +75,16 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
     @Inject
     lateinit var appPreferences: AppPreferences
 
+    // Add notification coordinator
+    private lateinit var notificationCoordinator: NotificationCoordinator
+
     override fun onCreate() {
         super.onCreate()
         sharedApplication?.componentApplication?.inject(this)
         createNotificationChannels()
+        
+        // Initialize notification coordinator
+        notificationCoordinator = NotificationCoordinator.getInstance(applicationContext)
     }
     
     private fun createNotificationChannels() {
@@ -372,16 +380,24 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
     private fun forwardMessageToNotificationService(roomToken: String, message: String, senderId: String, messageJson: String) {
         // Get conversation name 
         getChatDetails(null, roomToken, senderId) { conversationName, senderName ->
-            // Send a broadcast to MessageNotificationDetectionService
+            // Track the message but don't block if already processed
+            val timestamp = System.currentTimeMillis()
+            notificationCoordinator.trackMessage(roomToken, timestamp)
+            
+            // Always send a broadcast to MessageNotificationDetectionService
             val intent = Intent("com.nextcloud.talk.CHAT_MESSAGE")
             intent.putExtra("roomToken", roomToken)
             intent.putExtra("roomName", conversationName)
             intent.putExtra("message", messageJson)
             intent.putExtra("senderId", senderId)
             intent.putExtra("senderName", senderName)
+            intent.putExtra("timestamp", timestamp)
             
-            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
-                .sendBroadcast(intent)
+            val localBroadcastManager = LocalBroadcastManager.getInstance(this)
+            localBroadcastManager.sendBroadcast(intent)
+            
+            // Broadcast to update conversation list
+            notificationCoordinator.broadcastMessageUpdate(roomToken, timestamp)
             
             Log.d(TAG, "Forwarded message to notification service: $roomToken, $senderName")
         }

@@ -46,6 +46,7 @@ import org.json.JSONObject
 import java.util.zip.CRC32
 import android.content.BroadcastReceiver
 import java.util.HashMap
+import com.nextcloud.talk.utils.NotificationCoordinator
 
 /**
  * Service to detect and trigger notifications for new messages
@@ -86,11 +87,17 @@ class MessageNotificationDetectionService : Service() {
     
     // Store last message timestamp for each conversation
     private val lastMessageTimestamp = HashMap<String, Long>()
+    
+    // Notification coordinator
+    private lateinit var notificationCoordinator: NotificationCoordinator
 
     override fun onCreate() {
         super.onCreate()
         NextcloudTalkApplication.sharedApplication?.componentApplication?.inject(this)
         createNotificationChannels()
+        
+        // Initialize notification coordinator
+        notificationCoordinator = NotificationCoordinator.getInstance(applicationContext)
 
         // Register the broadcast receiver for chat messages
         messageReceiver = object : BroadcastReceiver() {
@@ -325,16 +332,25 @@ class MessageNotificationDetectionService : Service() {
             try {
                 val currentUser = userManager.currentUser?.blockingGet() ?: return@launch
                 
+                // Parse the message and extract timestamp
+                val messageObj = JSONObject(messageJson)
+                val messageText = messageObj.optString("message", "New message")
+                val messageTimestamp = messageObj.optLong("timestamp", System.currentTimeMillis())
+                
+                // Track message but don't block if it's already been processed
+                notificationCoordinator.trackMessage(roomToken, messageTimestamp)
+                
+                // ALWAYS broadcast message to update conversation list
+                notificationCoordinator.broadcastMessageUpdate(roomToken, messageTimestamp)
+                
                 // Don't show notifications for messages sent by the current user
                 if (senderId.equals(currentUser.userId, ignoreCase = true)) {
+                    Log.d(TAG, "Skipping notification for own message from: $senderId")
                     return@launch
                 }
                 
-                // Extract message content
-                val messageObj = JSONObject(messageJson)
-                val messageText = messageObj.optString("message", "New message")
-                
                 // Create and show the notification
+                Log.d(TAG, "Creating notification for message in $roomToken from $senderName: $messageText")
                 createChatNotification(
                     currentUser,
                     roomToken,

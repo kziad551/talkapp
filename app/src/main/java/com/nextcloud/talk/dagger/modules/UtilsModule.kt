@@ -12,9 +12,11 @@ import com.nextcloud.talk.utils.DateUtils
 import com.nextcloud.talk.utils.message.MessageUtils
 import com.nextcloud.talk.utils.permissions.PlatformPermissionUtil
 import com.nextcloud.talk.utils.permissions.PlatformPermissionUtilImpl
+import com.nextcloud.talk.utils.NotificationCoordinator
 import dagger.Module
 import dagger.Provides
 import dagger.Reusable
+import javax.inject.Singleton
 
 @Module(includes = [ContextModule::class])
 class UtilsModule {
@@ -34,5 +36,11 @@ class UtilsModule {
     @Reusable
     fun provideMessageUtils(context: Context): MessageUtils {
         return MessageUtils(context)
+    }
+    
+    @Provides
+    @Singleton
+    fun provideNotificationCoordinator(context: Context): NotificationCoordinator {
+        return NotificationCoordinator(context)
     }
 }

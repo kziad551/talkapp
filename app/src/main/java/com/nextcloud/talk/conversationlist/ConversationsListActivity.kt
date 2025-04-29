@@ -16,8 +16,10 @@ import android.animation.AnimatorInflater
 import android.annotation.SuppressLint
 import android.app.SearchManager
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Build
@@ -49,6 +51,7 @@ import androidx.core.view.isVisible
 import androidx.fragment.app.DialogFragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.work.Data
 import androidx.work.OneTimeWorkRequest
@@ -239,6 +242,10 @@ class ConversationsListActivity :
     val searchBehaviorSubject = BehaviorSubject.createDefault(false)
     private lateinit var accountIconBadge: BadgeDrawable
 
+    // Add these properties for message broadcast receiver
+    private val ACTION_CHAT_MESSAGE = "com.nextcloud.talk.CHAT_MESSAGE"
+    private var messageReceiver: BroadcastReceiver? = null
+
     private val onBackPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             if (forwardMessage) {
@@ -268,6 +275,9 @@ class ConversationsListActivity :
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
 
         initObservers()
+
+        // Setup the message receiver
+        setupMessageReceiver()
     }
 
     override fun onPostCreate(savedInstanceState: Bundle?) {
@@ -334,6 +344,33 @@ class ConversationsListActivity :
         }
 
         showSearchOrToolbar()
+
+        // Re-register the broadcast receiver if needed
+        if (messageReceiver == null) {
+            setupMessageReceiver()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // No need to unregister here, we want to keep receiving updates
+    }
+
+    override fun onDestroy() {
+        // Unregister the broadcast receiver when the activity is destroyed
+        if (messageReceiver != null) {
+            try {
+                LocalBroadcastManager.getInstance(this).unregisterReceiver(messageReceiver!!)
+                messageReceiver = null
+            } catch (e: Exception) {
+                Log.e(TAG, "Error unregistering message receiver", e)
+            }
+        }
+        super.onDestroy()
+        dispose(null)
+        if (searchViewDisposable != null && !searchViewDisposable!!.isDisposed) {
+            searchViewDisposable!!.dispose()
+        }
     }
 
     @Suppress("LongMethod")
@@ -1290,12 +1327,24 @@ class ConversationsListActivity :
         }
     }
 
-    public override fun onDestroy() {
-        super.onDestroy()
-        dispose(null)
-        if (searchViewDisposable != null && !searchViewDisposable!!.isDisposed) {
-            searchViewDisposable!!.dispose()
+    private fun setupMessageReceiver() {
+        messageReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == ACTION_CHAT_MESSAGE) {
+                    // When a new message arrives, refresh the conversation list immediately
+                    Log.d(TAG, "Received message broadcast, refreshing conversation list")
+                    val roomToken = intent.getStringExtra("roomToken")
+                    Log.d(TAG, "Message is for room: $roomToken")
+                    
+                    // Always refresh without timestamp checks
+                    fetchRooms()
+                }
+            }
         }
+        
+        // Register the broadcast receiver
+        val intentFilter = IntentFilter(ACTION_CHAT_MESSAGE)
+        LocalBroadcastManager.getInstance(this).registerReceiver(messageReceiver!!, intentFilter)
     }
 
     private fun onQueryTextChange(newText: String?) {
