@@ -12,10 +12,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import autodagger.AutoInjector
 import com.nextcloud.talk.R
 import com.nextcloud.talk.activities.MainActivity
@@ -24,6 +26,8 @@ import com.nextcloud.talk.data.user.model.User
 import com.nextcloud.talk.users.UserManager
 import com.nextcloud.talk.utils.bundle.BundleKeys
 import com.nextcloud.talk.chat.data.ChatMessageRepository
+import com.nextcloud.talk.repositories.conversations.ConversationsRepository
+import com.nextcloud.talk.utils.NotificationUtils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,6 +38,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 import org.json.JSONObject
 import java.util.zip.CRC32
+import android.content.BroadcastReceiver
 
 /**
  * Service to detect and trigger notifications for new messages
@@ -46,6 +51,7 @@ class MessageNotificationDetectionService : Service() {
         private const val NOTIFICATION_CHANNEL_MESSAGES = "NOTIFICATION_CHANNEL_MESSAGES"
         private const val NOTIFICATION_CHANNEL_SERVICE = "NOTIFICATION_CHANNEL_SERVICE"
         private const val FOREGROUND_SERVICE_NOTIFICATION_ID = 4242
+        private const val ACTION_CHAT_MESSAGE = "com.nextcloud.talk.CHAT_MESSAGE"
     }
     
     @Inject
@@ -53,14 +59,38 @@ class MessageNotificationDetectionService : Service() {
     
     @Inject
     lateinit var chatMessageRepository: ChatMessageRepository
+
+    @Inject
+    lateinit var conversationsRepository: ConversationsRepository
     
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private var monitoringJob: Job? = null
+    private lateinit var messageReceiver: BroadcastReceiver
     
     override fun onCreate() {
         super.onCreate()
         NextcloudTalkApplication.sharedApplication?.componentApplication?.inject(this)
         createNotificationChannels()
+
+        // Register the broadcast receiver for chat messages
+        messageReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == ACTION_CHAT_MESSAGE) {
+                    val messageJson = intent.getStringExtra("message")
+                    val roomToken = intent.getStringExtra("roomToken") ?: return
+                    val roomName = intent.getStringExtra("roomName") ?: "Chat"
+                    val senderId = intent.getStringExtra("senderId") ?: return
+                    val senderName = intent.getStringExtra("senderName") ?: "Someone"
+                    
+                    if (!messageJson.isNullOrEmpty()) {
+                        processChatMessage(roomToken, roomName, messageJson, senderId, senderName)
+                    }
+                }
+            }
+        }
+        
+        val intentFilter = IntentFilter(ACTION_CHAT_MESSAGE)
+        LocalBroadcastManager.getInstance(this).registerReceiver(messageReceiver, intentFilter)
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,6 +119,11 @@ class MessageNotificationDetectionService : Service() {
     override fun onDestroy() {
         stopMonitoring()
         serviceScope.cancel()
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(messageReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering receiver", e)
+        }
         super.onDestroy()
     }
     
@@ -154,9 +189,12 @@ class MessageNotificationDetectionService : Service() {
                 
                 Log.d(TAG, "Started message monitoring for user ${currentUser.id}")
                 
-                // In a real implementation, this would include listening for new messages
-                // and creating notifications for them. For now, we'll keep this simple
-                // and not show any test notification that could cause issues
+                // Send a broadcast to WebSocketService to register for message notifications
+                val registerIntent = Intent("com.nextcloud.talk.REGISTER_MESSAGE_LISTENER")
+                registerIntent.putExtra("serviceId", "MessageNotificationDetectionService")
+                LocalBroadcastManager.getInstance(this@MessageNotificationDetectionService).sendBroadcast(registerIntent)
+                
+                Log.d(TAG, "Registered with WebSocketService for chat messages")
             } catch (e: Exception) {
                 Log.e(TAG, "Error while monitoring messages", e)
             }
@@ -164,17 +202,47 @@ class MessageNotificationDetectionService : Service() {
     }
     
     private fun stopMonitoring() {
+        // Unregister from message notifications
+        val unregisterIntent = Intent("com.nextcloud.talk.UNREGISTER_MESSAGE_LISTENER")
+        unregisterIntent.putExtra("serviceId", "MessageNotificationDetectionService")
+        LocalBroadcastManager.getInstance(this).sendBroadcast(unregisterIntent)
+        
         monitoringJob?.cancel()
         monitoringJob = null
         Log.d(TAG, "Stopped message monitoring service")
     }
     
-    private fun createChatNotification(user: User, roomToken: String, message: String, sender: String) {
-        // Generate a notification ID
-        val notificationId = calculateCRC32(System.currentTimeMillis().toString()).toInt()
-        
-        val conversationName = "Chat" // Would be fetched from conversation repository
-        val senderName = sender // Would be resolved to proper display name
+    private fun processChatMessage(roomToken: String, roomName: String, messageJson: String, senderId: String, senderName: String) {
+        serviceScope.launch {
+            try {
+                val currentUser = userManager.currentUser?.blockingGet() ?: return@launch
+                
+                // Don't show notifications for messages sent by the current user
+                if (senderId.equals(currentUser.userId, ignoreCase = true)) {
+                    return@launch
+                }
+                
+                // Extract message content
+                val messageObj = JSONObject(messageJson)
+                val messageText = messageObj.optString("message", "New message")
+                
+                // Create and show the notification
+                createChatNotification(
+                    currentUser,
+                    roomToken,
+                    messageText,
+                    senderName,
+                    roomName
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing chat message", e)
+            }
+        }
+    }
+    
+    private fun createChatNotification(user: User, roomToken: String, message: String, sender: String, conversationName: String) {
+        // Generate a notification ID based on room token
+        val notificationId = calculateCRC32(roomToken).toInt()
         
         val pendingIntent = Intent(this, MainActivity::class.java).let { notificationIntent ->
             notificationIntent.putExtra(BundleKeys.KEY_ROOM_TOKEN, roomToken)
@@ -191,7 +259,7 @@ class MessageNotificationDetectionService : Service() {
         
         val notificationBuilder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(senderName)
+            .setContentTitle(sender)
             .setContentText(message)
             .setSubText(conversationName)
             .setContentIntent(pendingIntent)
@@ -200,6 +268,8 @@ class MessageNotificationDetectionService : Service() {
         
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.notify(notificationId, notificationBuilder.build())
+        
+        Log.d(TAG, "Notification shown for message in room: $roomToken from: $sender")
     }
     
     private fun calculateCRC32(data: String): Long {

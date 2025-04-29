@@ -166,8 +166,11 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
 
         NotificationUtils.registerNotificationChannels(applicationContext, appPreferences)
         
-        // Start the message notification detection service
-        MessageNotificationServiceUtil.startMessageNotificationService(applicationContext)
+        // Start the notification services after a short delay to ensure app is fully initialized
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            // Start the message notification detection service
+            MessageNotificationServiceUtil.startMessageNotificationService(applicationContext)
+        }, 3000) // 3 second delay
     }
 
     private fun initWorkers() {

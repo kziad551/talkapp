@@ -171,6 +171,9 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
             
             // Create a notification for the chat message
             createChatNotification(user, roomToken, messageText, sender)
+            
+            // Forward the message to MessageNotificationDetectionService
+            forwardMessageToNotificationService(roomToken, messageText, sender, messageData.toString())
         } catch (e: Exception) {
             Log.e(TAG, "Error processing chat message", e)
         }
@@ -272,21 +275,31 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
         }
     }
     
-    private fun getChatDetails(
-        user: User, 
-        roomToken: String, 
-        senderId: String, 
-        callback: (conversationName: String, senderName: String) -> Unit
-    ) {
-        // Fetch room and participant details from the server or local cache
-        // For simplicity, this is a placeholder implementation
-        // In a real implementation, you would query the API or local database
+    private fun getChatDetails(user: User?, roomToken: String, sender: String, callback: (String, String) -> Unit) {
+        // Default values
+        var conversationName = "Chat"
+        var senderName = "Someone"
         
-        // For now, use default values
-        val conversationName = "Conversation"
-        val senderName = if (senderId.isNotEmpty()) "User" else ""
-        
-        callback(conversationName, senderName)
+        // Try to get details from the server
+        try {
+            // If user is null, try to get the current user
+            val currentUser = user ?: userManager.currentUser?.blockingGet()
+            
+            if (currentUser != null) {
+                // This would normally get conversation details and sender name
+                // For this example, we just use defaults
+                
+                // In a real implementation, you would:
+                // 1. Query conversation details from the API
+                // 2. Resolve the sender display name
+            }
+            
+            // Return the details via callback
+            callback(conversationName, senderName)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting chat details", e)
+            callback(conversationName, senderName)
+        }
     }
     
     private fun addReplyAction(
@@ -354,6 +367,24 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
         val crc = CRC32()
         crc.update(text.toByteArray())
         return crc.value
+    }
+    
+    private fun forwardMessageToNotificationService(roomToken: String, message: String, senderId: String, messageJson: String) {
+        // Get conversation name 
+        getChatDetails(null, roomToken, senderId) { conversationName, senderName ->
+            // Send a broadcast to MessageNotificationDetectionService
+            val intent = Intent("com.nextcloud.talk.CHAT_MESSAGE")
+            intent.putExtra("roomToken", roomToken)
+            intent.putExtra("roomName", conversationName)
+            intent.putExtra("message", messageJson)
+            intent.putExtra("senderId", senderId)
+            intent.putExtra("senderName", senderName)
+            
+            androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(this)
+                .sendBroadcast(intent)
+            
+            Log.d(TAG, "Forwarded message to notification service: $roomToken, $senderName")
+        }
     }
     
     private val KEY_FROM_NOTIFICATION_START_CALL = BundleKeys.KEY_FROM_NOTIFICATION_START_CALL

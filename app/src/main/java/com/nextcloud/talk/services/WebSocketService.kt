@@ -10,14 +10,17 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import autodagger.AutoInjector
 import com.nextcloud.talk.R
 import com.nextcloud.talk.application.NextcloudTalkApplication
@@ -50,6 +53,10 @@ class WebSocketService : Service() {
         // Backend configuration
         private const val BACKEND_URL = "https://nextcloud.wztechno.com"
         private const val BACKEND_SECRET = "changeme123"
+        
+        // Actions for message listeners
+        private const val ACTION_REGISTER_MESSAGE_LISTENER = "com.nextcloud.talk.REGISTER_MESSAGE_LISTENER"
+        private const val ACTION_UNREGISTER_MESSAGE_LISTENER = "com.nextcloud.talk.UNREGISTER_MESSAGE_LISTENER"
     }
 
     @Inject
@@ -63,6 +70,8 @@ class WebSocketService : Service() {
     private var isConnecting = false
     private var currentUser: User? = null
     private var reconnectAttempts = 0
+    private val messageListeners = mutableSetOf<String>()
+    private lateinit var listenerReceiver: BroadcastReceiver
 
     private val webSocketListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -106,6 +115,29 @@ class WebSocketService : Service() {
         ).apply {
             setReferenceCounted(false)
         }
+        
+        // Set up listener for message listener registration
+        listenerReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    ACTION_REGISTER_MESSAGE_LISTENER -> {
+                        val serviceId = intent.getStringExtra("serviceId") ?: return
+                        registerMessageListener(serviceId)
+                    }
+                    ACTION_UNREGISTER_MESSAGE_LISTENER -> {
+                        val serviceId = intent.getStringExtra("serviceId") ?: return
+                        unregisterMessageListener(serviceId)
+                    }
+                }
+            }
+        }
+        
+        val intentFilter = IntentFilter().apply {
+            addAction(ACTION_REGISTER_MESSAGE_LISTENER)
+            addAction(ACTION_UNREGISTER_MESSAGE_LISTENER)
+        }
+        
+        LocalBroadcastManager.getInstance(this).registerReceiver(listenerReceiver, intentFilter)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -137,6 +169,11 @@ class WebSocketService : Service() {
     override fun onDestroy() {
         webSocketClient?.close(1000, "Service destroyed")
         wakeLock?.release()
+        try {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(listenerReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering receiver", e)
+        }
         super.onDestroy()
     }
 
@@ -208,6 +245,16 @@ class WebSocketService : Service() {
             putExtra(BundleKeys.KEY_INTERNAL_USER_ID, currentUser?.id)
         }
         startService(intent)
+    }
+    
+    private fun registerMessageListener(serviceId: String) {
+        messageListeners.add(serviceId)
+        Log.d(TAG, "Registered message listener: $serviceId, total listeners: ${messageListeners.size}")
+    }
+    
+    private fun unregisterMessageListener(serviceId: String) {
+        messageListeners.remove(serviceId)
+        Log.d(TAG, "Unregistered message listener: $serviceId, remaining listeners: ${messageListeners.size}")
     }
     
     private fun createNotificationChannel() {
