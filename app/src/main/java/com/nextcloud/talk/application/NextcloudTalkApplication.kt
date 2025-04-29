@@ -165,10 +165,6 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
         EmojiManager.install(GoogleEmojiProvider())
 
         NotificationUtils.registerNotificationChannels(applicationContext, appPreferences)
-        
-        // Only start the notification service in MainActivity after permissions are granted
-        // Don't start it here in the Application class to avoid crashes
-        // The delayed start was causing crashes when permissions weren't granted
     }
 
     private fun initWorkers() {

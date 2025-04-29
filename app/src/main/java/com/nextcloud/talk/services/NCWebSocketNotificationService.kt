@@ -214,7 +214,7 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
         getChatDetails(user, roomToken, sender) { conversationName, senderName ->
             val pendingIntent = Intent(this, MainActivity::class.java).let { notificationIntent ->
                 notificationIntent.putExtra(BundleKeys.KEY_ROOM_TOKEN, roomToken)
-                notificationIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, user.id)
+                notificationIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, user.id ?: 0L)
                 notificationIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 
                 PendingIntent.getActivity(
@@ -235,8 +235,8 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
             
             // Add reply and mark-as-read actions
-            addReplyAction(notificationBuilder, notificationId, roomToken, user.id)
-            addMarkAsReadAction(notificationBuilder, notificationId, roomToken, user.id)
+            addReplyAction(notificationBuilder, notificationId, roomToken, user.id ?: 0L)
+            addMarkAsReadAction(notificationBuilder, notificationId, roomToken, user.id ?: 0L)
             
             sendNotification(notificationId, notificationBuilder.build())
         }
@@ -250,7 +250,7 @@ class NCWebSocketNotificationService : IntentService("NCWebSocketNotificationSer
         getChatDetails(user, roomToken, "") { conversationName, _ ->
             val pendingIntent = Intent(this, MainActivity::class.java).let { notificationIntent ->
                 notificationIntent.putExtra(BundleKeys.KEY_ROOM_TOKEN, roomToken)
-                notificationIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, user.id)
+                notificationIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, user.id ?: 0L)
                 notificationIntent.putExtra(KEY_FROM_NOTIFICATION_START_CALL, true)
                 notificationIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
                 

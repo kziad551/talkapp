@@ -30,17 +30,22 @@ import com.nextcloud.talk.utils.bundle.BundleKeys
 import com.nextcloud.talk.chat.data.ChatMessageRepository
 import com.nextcloud.talk.repositories.conversations.ConversationsRepository
 import com.nextcloud.talk.utils.NotificationUtils
+import com.nextcloud.talk.data.database.dao.ConversationsDao
+import com.nextcloud.talk.data.database.dao.ChatMessagesDao
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import org.json.JSONObject
 import java.util.zip.CRC32
 import android.content.BroadcastReceiver
+import java.util.HashMap
 
 /**
  * Service to detect and trigger notifications for new messages
@@ -54,6 +59,9 @@ class MessageNotificationDetectionService : Service() {
         private const val NOTIFICATION_CHANNEL_SERVICE = "NOTIFICATION_CHANNEL_SERVICE"
         private const val FOREGROUND_SERVICE_NOTIFICATION_ID = 4242
         private const val ACTION_CHAT_MESSAGE = "com.nextcloud.talk.CHAT_MESSAGE"
+        
+        // Polling constants
+        private const val MESSAGE_POLLING_INTERVAL = 30000L // 30 seconds
     }
     
     @Inject
@@ -65,10 +73,20 @@ class MessageNotificationDetectionService : Service() {
     @Inject
     lateinit var conversationsRepository: ConversationsRepository
     
+    @Inject
+    lateinit var conversationsDao: ConversationsDao
+    
+    @Inject
+    lateinit var chatMessagesDao: ChatMessagesDao
+    
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private var monitoringJob: Job? = null
+    private var pollingJob: Job? = null
     private lateinit var messageReceiver: BroadcastReceiver
     
+    // Store last message timestamp for each conversation
+    private val lastMessageTimestamp = HashMap<String, Long>()
+
     override fun onCreate() {
         super.onCreate()
         NextcloudTalkApplication.sharedApplication?.componentApplication?.inject(this)
@@ -203,7 +221,7 @@ class MessageNotificationDetectionService : Service() {
                     return@launch
                 }
                 
-                Log.d(TAG, "Started message monitoring for user ${currentUser.id}")
+                Log.d(TAG, "Started message monitoring for user ${currentUser.id ?: 0L}")
                 
                 // Send a broadcast to WebSocketService to register for message notifications
                 val registerIntent = Intent("com.nextcloud.talk.REGISTER_MESSAGE_LISTENER")
@@ -211,9 +229,78 @@ class MessageNotificationDetectionService : Service() {
                 LocalBroadcastManager.getInstance(this@MessageNotificationDetectionService).sendBroadcast(registerIntent)
                 
                 Log.d(TAG, "Registered with WebSocketService for chat messages")
+                
+                // Start polling for messages as a fallback
+                startPollingForMessages(currentUser)
             } catch (e: Exception) {
                 Log.e(TAG, "Error while monitoring messages", e)
             }
+        }
+    }
+    
+    private fun startPollingForMessages(user: User) {
+        Log.d(TAG, "Starting message polling for user ${user.id ?: 0L}")
+        
+        pollingJob = serviceScope.launch {
+            while (true) {
+                try {
+                    pollForNewMessages(user)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error during message polling", e)
+                }
+                delay(MESSAGE_POLLING_INTERVAL)
+            }
+        }
+    }
+    
+    private suspend fun pollForNewMessages(user: User) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Polling for new messages for user ${user.id ?: 0L}")
+            
+            // Get conversations for the user
+            val conversations = conversationsDao.getConversationsForUser(user.id ?: 0L).firstOrNull() ?: emptyList()
+            
+            for (conversation in conversations) {
+                val roomToken = conversation.token ?: continue
+                val roomName = conversation.displayName ?: "Chat"
+                
+                // Get messages for this conversation
+                val latestMessages = chatMessagesDao.getMessagesForConversation(conversation.internalId).firstOrNull() ?: emptyList()
+                if (latestMessages.isEmpty()) continue
+                
+                // Get the latest message (first one since ordered by timestamp DESC)
+                val latestMessage = latestMessages.first()
+                val messageTimestamp = latestMessage.timestamp ?: 0
+                val senderId = latestMessage.actorId ?: ""
+                val senderName = latestMessage.actorDisplayName ?: "Someone"
+                val messageText = latestMessage.message ?: "New message"
+                
+                // Skip if this is the user's own message
+                if (senderId == user.userId) continue
+                
+                // Check if this is a new message by comparing timestamps
+                val lastTimestamp = lastMessageTimestamp[roomToken] ?: 0
+                
+                if (messageTimestamp > lastTimestamp) {
+                    lastMessageTimestamp[roomToken] = messageTimestamp
+                    
+                    // Only show notification if this is not the first time we're checking
+                    // (to avoid showing notifications for old messages)
+                    if (lastTimestamp > 0) {
+                        createChatNotification(
+                            user,
+                            roomToken,
+                            messageText,
+                            senderName,
+                            roomName
+                        )
+                    } else {
+                        Log.d(TAG, "Skipping notification for first-time check of room $roomToken")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error polling for new messages", e)
         }
     }
     
@@ -225,6 +312,11 @@ class MessageNotificationDetectionService : Service() {
         
         monitoringJob?.cancel()
         monitoringJob = null
+        
+        // Stop polling
+        pollingJob?.cancel()
+        pollingJob = null
+        
         Log.d(TAG, "Stopped message monitoring service")
     }
     
@@ -262,7 +354,7 @@ class MessageNotificationDetectionService : Service() {
         
         val pendingIntent = Intent(this, MainActivity::class.java).let { notificationIntent ->
             notificationIntent.putExtra(BundleKeys.KEY_ROOM_TOKEN, roomToken)
-            notificationIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, user.id)
+            notificationIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, user.id ?: 0L)
             notificationIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             
             PendingIntent.getActivity(
