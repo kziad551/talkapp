@@ -13,10 +13,12 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import autodagger.AutoInjector
 import com.nextcloud.talk.R
@@ -97,6 +99,20 @@ class MessageNotificationDetectionService : Service() {
         // Start as foreground service for Android 8.0+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
+                // Check for notification permission on Android 13+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val permissionCheck = ContextCompat.checkSelfPermission(
+                        this,
+                        android.Manifest.permission.POST_NOTIFICATIONS
+                    )
+                    
+                    if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
+                        Log.e(TAG, "Notification permission not granted, stopping service")
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
+                }
+                
                 startForeground(FOREGROUND_SERVICE_NOTIFICATION_ID, createForegroundNotification())
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting foreground service", e)

@@ -59,6 +59,11 @@ class MainActivity : BaseActivity(), ActionBarProvider {
     @Inject
     lateinit var userManager: UserManager
 
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val REQUEST_NOTIFICATION_PERMISSION = 1001
+    }
+
     private val onBackPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
             finish()
@@ -87,10 +92,50 @@ class MainActivity : BaseActivity(), ActionBarProvider {
 
         handleIntent(intent)
 
-        // Start the message notification service
-        MessageNotificationServiceUtil.startMessageNotificationService(this)
+        // Request notification permissions if needed and start the service
+        checkNotificationPermissionsAndStartService()
 
         onBackPressedDispatcher.addCallback(this, onBackPressedCallback)
+    }
+
+    private fun checkNotificationPermissionsAndStartService() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            // Check if notification permission is already granted
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                // Request notification permission
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATION_PERMISSION)
+            } else {
+                // Permission already granted, start the service
+                MessageNotificationServiceUtil.startMessageNotificationService(this)
+            }
+        } else {
+            // For older Android versions, no runtime permission needed
+            MessageNotificationServiceUtil.startMessageNotificationService(this)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        
+        if (requestCode == REQUEST_NOTIFICATION_PERMISSION) {
+            if (grantResults.isNotEmpty() && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                // Permission granted, start the service
+                MessageNotificationServiceUtil.startMessageNotificationService(this)
+            } else {
+                // Permission denied, show a message
+                android.widget.Toast.makeText(
+                    this,
+                    "Notification permission denied. You may not receive message notifications.",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    // Method to launch WebSocket test activity
+    fun launchWebSocketTest() {
+        val intent = Intent(this, WebSocketTestActivity::class.java)
+        startActivity(intent)
     }
 
     fun lockScreenIfConditionsApply() {
@@ -287,9 +332,5 @@ class MainActivity : BaseActivity(), ActionBarProvider {
                 }
             })
         }
-    }
-
-    companion object {
-        private val TAG = MainActivity::class.java.simpleName
     }
 }

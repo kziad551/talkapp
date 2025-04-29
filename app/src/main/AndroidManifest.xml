@@ -130,6 +130,17 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".activities.WebSocketTestActivity"
+            android:label="WebSocket Test"
+            android:theme="@style/AppTheme"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- WebSocket Services -->
         <service
             android:name=".services.WebSocketService"

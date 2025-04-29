@@ -5,10 +5,13 @@
  */
 package com.nextcloud.talk.utils
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.nextcloud.talk.services.MessageNotificationDetectionService
 import com.nextcloud.talk.users.UserManager
 
@@ -19,10 +22,23 @@ object MessageNotificationServiceUtil {
     private const val TAG = "MsgNotifServiceUtil"
     
     /**
-     * Start the MessageNotificationDetectionService
+     * Start the MessageNotificationDetectionService only if notification permissions are granted
      */
     fun startMessageNotificationService(context: Context) {
         try {
+            // Check for notification permission on Android 13+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val permissionCheck = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                )
+                
+                if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
+                    Log.d(TAG, "Notification permission not granted, skipping service start")
+                    return
+                }
+            }
+            
             // Only start service if there's a logged-in user
             Log.d(TAG, "Starting MessageNotificationDetectionService")
             
