@@ -59,10 +59,9 @@ class MessageNotificationDetectionService : Service() {
         private const val NOTIFICATION_CHANNEL_MESSAGES = "NOTIFICATION_CHANNEL_MESSAGES"
         private const val NOTIFICATION_CHANNEL_SERVICE = "NOTIFICATION_CHANNEL_SERVICE"
         private const val FOREGROUND_SERVICE_NOTIFICATION_ID = 4242
-        private const val ACTION_CHAT_MESSAGE = "com.nextcloud.talk.CHAT_MESSAGE"
         
-        // Polling constants
-        private const val MESSAGE_POLLING_INTERVAL = 30000L // 30 seconds
+        // Faster polling for more reliable notifications
+        private const val MESSAGE_POLLING_INTERVAL = 5000L // 5 seconds (reduced from 10)
     }
     
     @Inject
@@ -83,7 +82,6 @@ class MessageNotificationDetectionService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private var monitoringJob: Job? = null
     private var pollingJob: Job? = null
-    private lateinit var messageReceiver: BroadcastReceiver
     
     // Store last message timestamp for each conversation
     private val lastMessageTimestamp = HashMap<String, Long>()
@@ -98,26 +96,6 @@ class MessageNotificationDetectionService : Service() {
         
         // Initialize notification coordinator
         notificationCoordinator = NotificationCoordinator.getInstance(applicationContext)
-
-        // Register the broadcast receiver for chat messages
-        messageReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == ACTION_CHAT_MESSAGE) {
-                    val messageJson = intent.getStringExtra("message")
-                    val roomToken = intent.getStringExtra("roomToken") ?: return
-                    val roomName = intent.getStringExtra("roomName") ?: "Chat"
-                    val senderId = intent.getStringExtra("senderId") ?: return
-                    val senderName = intent.getStringExtra("senderName") ?: "Someone"
-                    
-                    if (!messageJson.isNullOrEmpty()) {
-                        processChatMessage(roomToken, roomName, messageJson, senderId, senderName)
-                    }
-                }
-            }
-        }
-        
-        val intentFilter = IntentFilter(ACTION_CHAT_MESSAGE)
-        LocalBroadcastManager.getInstance(this).registerReceiver(messageReceiver, intentFilter)
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -152,6 +130,8 @@ class MessageNotificationDetectionService : Service() {
         }
         
         startMonitoring()
+        
+        // Using START_STICKY to ensure service restarts if killed
         return START_STICKY
     }
     
@@ -160,11 +140,6 @@ class MessageNotificationDetectionService : Service() {
     override fun onDestroy() {
         stopMonitoring()
         serviceScope.cancel()
-        try {
-            LocalBroadcastManager.getInstance(this).unregisterReceiver(messageReceiver)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error unregistering receiver", e)
-        }
         super.onDestroy()
     }
     
@@ -230,14 +205,10 @@ class MessageNotificationDetectionService : Service() {
                 
                 Log.d(TAG, "Started message monitoring for user ${currentUser.id ?: 0L}")
                 
-                // Send a broadcast to WebSocketService to register for message notifications
-                val registerIntent = Intent("com.nextcloud.talk.REGISTER_MESSAGE_LISTENER")
-                registerIntent.putExtra("serviceId", "MessageNotificationDetectionService")
-                LocalBroadcastManager.getInstance(this@MessageNotificationDetectionService).sendBroadcast(registerIntent)
+                // Clear existing timestamps to force notification of new messages
+                lastMessageTimestamp.clear()
                 
-                Log.d(TAG, "Registered with WebSocketService for chat messages")
-                
-                // Start polling for messages as a fallback
+                // Start polling for messages immediately
                 startPollingForMessages(currentUser)
             } catch (e: Exception) {
                 Log.e(TAG, "Error while monitoring messages", e)
@@ -283,26 +254,45 @@ class MessageNotificationDetectionService : Service() {
                 val messageText = latestMessage.message ?: "New message"
                 
                 // Skip if this is the user's own message
-                if (senderId == user.userId) continue
+                if (senderId == user.userId) {
+                    continue
+                }
+                
+                // Use a much wider time window (5 minutes) to catch more messages
+                // This ensures we don't miss notifications due to time sync issues
+                val systemLastCheckTime = System.currentTimeMillis() - (5 * 60 * 1000) // 5 minutes
+                val messageRecent = messageTimestamp > systemLastCheckTime
                 
                 // Check if this is a new message by comparing timestamps
                 val lastTimestamp = lastMessageTimestamp[roomToken] ?: 0
+                val isNewMessage = messageTimestamp > lastTimestamp
                 
-                if (messageTimestamp > lastTimestamp) {
+                Log.d(TAG, "Room: $roomToken, Message time: $messageTimestamp, Last seen: $lastTimestamp, Recent: $messageRecent, New: $isNewMessage")
+                
+                if (isNewMessage) {
+                    // Always update the timestamp
                     lastMessageTimestamp[roomToken] = messageTimestamp
                     
-                    // Only show notification if this is not the first time we're checking
-                    // (to avoid showing notifications for old messages)
-                    if (lastTimestamp > 0) {
-                        createChatNotification(
-                            user,
-                            roomToken,
-                            messageText,
-                            senderName,
-                            roomName
-                        )
+                    // Broadcast message update to refresh conversation list FIRST
+                    // This ensures UI is updated regardless of notification
+                    notificationCoordinator.broadcastMessageUpdate(roomToken, messageTimestamp)
+                    
+                    // Always show notification for first detection if message is from last 30 minutes
+                    val isFirstDetection = lastTimestamp == 0L
+                    val isRecent30Min = System.currentTimeMillis() - messageTimestamp < 30 * 60 * 1000
+                    
+                    if (isFirstDetection && isRecent30Min) {
+                        Log.d(TAG, "First detection of recent message in $roomToken from $senderName, showing notification")
+                        createChatNotification(user, roomToken, messageText, senderName, roomName)
+                        continue
+                    }
+                    
+                    // For subsequent detections, check if we should show a notification
+                    if (notificationCoordinator.trackMessage(roomToken, messageTimestamp)) {
+                        Log.d(TAG, "New message detected in $roomToken from $senderName: $messageText, showing notification")
+                        createChatNotification(user, roomToken, messageText, senderName, roomName)
                     } else {
-                        Log.d(TAG, "Skipping notification for first-time check of room $roomToken")
+                        Log.d(TAG, "Message update broadcast for $roomToken but notification suppressed")
                     }
                 }
             }
@@ -312,11 +302,6 @@ class MessageNotificationDetectionService : Service() {
     }
     
     private fun stopMonitoring() {
-        // Unregister from message notifications
-        val unregisterIntent = Intent("com.nextcloud.talk.UNREGISTER_MESSAGE_LISTENER")
-        unregisterIntent.putExtra("serviceId", "MessageNotificationDetectionService")
-        LocalBroadcastManager.getInstance(this).sendBroadcast(unregisterIntent)
-        
         monitoringJob?.cancel()
         monitoringJob = null
         
@@ -337,10 +322,8 @@ class MessageNotificationDetectionService : Service() {
                 val messageText = messageObj.optString("message", "New message")
                 val messageTimestamp = messageObj.optLong("timestamp", System.currentTimeMillis())
                 
-                // Track message but don't block if it's already been processed
-                notificationCoordinator.trackMessage(roomToken, messageTimestamp)
-                
                 // ALWAYS broadcast message to update conversation list
+                // The broadcast will return immediately if a similar one was just processed
                 notificationCoordinator.broadcastMessageUpdate(roomToken, messageTimestamp)
                 
                 // Don't show notifications for messages sent by the current user
@@ -349,15 +332,21 @@ class MessageNotificationDetectionService : Service() {
                     return@launch
                 }
                 
-                // Create and show the notification
-                Log.d(TAG, "Creating notification for message in $roomToken from $senderName: $messageText")
-                createChatNotification(
-                    currentUser,
-                    roomToken,
-                    messageText,
-                    senderName,
-                    roomName
-                )
+                // Only show notification if it hasn't been shown already
+                // Track message and check if it should be processed
+                if (notificationCoordinator.trackMessage(roomToken, messageTimestamp)) {
+                    // Create and show the notification
+                    Log.d(TAG, "Creating notification for message in $roomToken from $senderName: $messageText")
+                    createChatNotification(
+                        currentUser,
+                        roomToken,
+                        messageText,
+                        senderName,
+                        roomName
+                    )
+                } else {
+                    Log.d(TAG, "Notification already processed by another service, skipping")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error processing chat message", e)
             }
@@ -365,6 +354,12 @@ class MessageNotificationDetectionService : Service() {
     }
     
     private fun createChatNotification(user: User, roomToken: String, message: String, sender: String, conversationName: String) {
+        // First check if we have notification permission
+        if (!checkNotificationPermission()) {
+            Log.e(TAG, "Cannot show notification for room $roomToken - missing notification permission")
+            return
+        }
+        
         // Generate a notification ID based on room token
         val notificationId = calculateCRC32(roomToken).toInt()
         
@@ -381,7 +376,31 @@ class MessageNotificationDetectionService : Service() {
             )
         }
         
-        val notificationBuilder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_MESSAGES)
+        // Create a unique channel ID for each conversation to ensure reliable delivery
+        val channelId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val uniqueChannelId = "CHAT_CHANNEL_$roomToken"
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            
+            // Check if channel exists; if not, create it
+            if (notificationManager.getNotificationChannel(uniqueChannelId) == null) {
+                val channel = NotificationChannel(
+                    uniqueChannelId,
+                    "Chat: $conversationName",
+                    NotificationManager.IMPORTANCE_HIGH
+                )
+                channel.description = "Notifications for chat: $conversationName"
+                channel.enableLights(true)
+                channel.enableVibration(true)
+                notificationManager.createNotificationChannel(channel)
+                Log.d(TAG, "Created notification channel $uniqueChannelId for room $roomToken")
+            }
+            
+            uniqueChannelId
+        } else {
+            NOTIFICATION_CHANNEL_MESSAGES
+        }
+        
+        val notificationBuilder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(sender)
             .setContentText(message)
@@ -389,11 +408,36 @@ class MessageNotificationDetectionService : Service() {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setDefaults(NotificationCompat.DEFAULT_ALL) // Enable sound, vibration and lights
         
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(notificationId, notificationBuilder.build())
+            Log.d(TAG, "Notification shown for message in room: $roomToken from: $sender - ID: $notificationId")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show notification for room $roomToken", e)
+        }
+    }
+    
+    private fun checkNotificationPermission(): Boolean {
+        // Check system notification permission
         val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.notify(notificationId, notificationBuilder.build())
+        val hasSystemPermission = notificationManager.areNotificationsEnabled()
         
-        Log.d(TAG, "Notification shown for message in room: $roomToken from: $sender")
+        // Check runtime permission for Android 13+
+        val hasRuntimePermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) == 
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            true // No runtime permission needed on older Android versions
+        }
+        
+        // Log the permission status
+        Log.d(TAG, "Notification permission check - System: $hasSystemPermission, Runtime: $hasRuntimePermission")
+        
+        return hasSystemPermission && hasRuntimePermission
     }
     
     private fun calculateCRC32(data: String): Long {

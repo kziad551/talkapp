@@ -10,6 +10,8 @@
 package com.nextcloud.talk.application
 
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Build.VERSION.SDK_INT
 import android.os.Build.VERSION_CODES.P
 import android.util.Log
@@ -102,6 +104,9 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
 
     @Inject
     lateinit var okHttpClient: OkHttpClient
+
+    @Inject
+    lateinit var userManager: com.nextcloud.talk.users.UserManager
     //endregion
 
     val hook: SQLiteDatabaseHook = object : SQLiteDatabaseHook {
@@ -157,6 +162,9 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
         DeviceUtils.ignoreSpecialBatteryFeatures()
 
         initWorkers()
+        
+        // Start essential background services
+        startNotificationServices()
 
         val config = BundledEmojiCompatConfig(this)
         config.setReplaceAll(true)
@@ -190,6 +198,24 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
             ExistingPeriodicWorkPolicy.REPLACE,
             periodicCapabilitiesUpdateWork
         )
+    }
+
+    private fun startNotificationServices() {
+        // No need to start services if we don't have a valid user
+        val currentUser = userManager.currentUser?.blockingGet() ?: return
+        
+        // Only use the polling service - we're disabling WebSocket completely
+        try {
+            val pollingIntent = Intent(this, com.nextcloud.talk.services.NotificationPollingService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(pollingIntent)
+            } else {
+                startService(pollingIntent)
+            }
+            Log.d(TAG, "Started NotificationPollingService for reliable notifications")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start NotificationPollingService", e)
+        }
     }
 
     override fun onTerminate() {

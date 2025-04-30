@@ -110,6 +110,7 @@ import com.nextcloud.talk.models.json.conversations.RoomsOverall
 import com.nextcloud.talk.models.json.converters.EnumActorTypeConverter
 import com.nextcloud.talk.models.json.participants.Participant
 import com.nextcloud.talk.repositories.unifiedsearch.UnifiedSearchRepository
+import com.nextcloud.talk.services.WebSocketService
 import com.nextcloud.talk.settings.SettingsActivity
 import com.nextcloud.talk.ui.BackgroundVoiceMessageCard
 import com.nextcloud.talk.ui.dialog.ChooseAccountDialogFragment
@@ -245,6 +246,9 @@ class ConversationsListActivity :
     // Add these properties for message broadcast receiver
     private val ACTION_CHAT_MESSAGE = "com.nextcloud.talk.CHAT_MESSAGE"
     private var messageReceiver: BroadcastReceiver? = null
+    private var lastRefreshTime = System.currentTimeMillis()
+    private var lastServiceCheck = System.currentTimeMillis()
+    private var isReceiverRegistered = false // Track registration status
 
     private val onBackPressedCallback = object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
@@ -348,20 +352,30 @@ class ConversationsListActivity :
         // Re-register the broadcast receiver if needed
         if (messageReceiver == null) {
             setupMessageReceiver()
+        } else if (!isReceiverRegistered) {
+            // If receiver exists but isn't registered, register it
+            val intentFilter = IntentFilter(ACTION_CHAT_MESSAGE)
+            LocalBroadcastManager.getInstance(this).registerReceiver(messageReceiver!!, intentFilter)
+            isReceiverRegistered = true
+            Log.d(TAG, "Re-registered message receiver")
         }
+        
+        // Ensure notification services are running
+        ensureNotificationServicesRunning()
     }
 
     override fun onPause() {
         super.onPause()
-        // No need to unregister here, we want to keep receiving updates
+        // Keep receiver registered through onPause to continue receiving notifications
     }
 
     override fun onDestroy() {
         // Unregister the broadcast receiver when the activity is destroyed
-        if (messageReceiver != null) {
+        if (messageReceiver != null && isReceiverRegistered) {
             try {
                 LocalBroadcastManager.getInstance(this).unregisterReceiver(messageReceiver!!)
-                messageReceiver = null
+                isReceiverRegistered = false
+                Log.d(TAG, "Unregistered message receiver")
             } catch (e: Exception) {
                 Log.e(TAG, "Error unregistering message receiver", e)
             }
@@ -1332,12 +1346,21 @@ class ConversationsListActivity :
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == ACTION_CHAT_MESSAGE) {
                     // When a new message arrives, refresh the conversation list immediately
-                    Log.d(TAG, "Received message broadcast, refreshing conversation list")
                     val roomToken = intent.getStringExtra("roomToken")
-                    Log.d(TAG, "Message is for room: $roomToken")
+                    val timestamp = intent.getLongExtra("timestamp", 0L)
+                    val isUrgent = intent.getBooleanExtra("urgent", false)
                     
-                    // Always refresh without timestamp checks
-                    fetchRooms()
+                    Log.d(TAG, "Received message broadcast for room: $roomToken, urgent: $isUrgent, timestamp: $timestamp")
+                    
+                    // If this is an urgent message or we haven't refreshed recently, do it now
+                    val timeSinceLastRefresh = System.currentTimeMillis() - lastRefreshTime
+                    if (isUrgent || timeSinceLastRefresh > 5000) {
+                        Log.d(TAG, "Performing refresh for message (time since last refresh: ${timeSinceLastRefresh}ms)")
+                        fetchRooms()
+                        lastRefreshTime = System.currentTimeMillis()
+                    } else {
+                        Log.d(TAG, "Skipping refresh, was refreshed recently (${timeSinceLastRefresh}ms ago)")
+                    }
                 }
             }
         }
@@ -1345,6 +1368,32 @@ class ConversationsListActivity :
         // Register the broadcast receiver
         val intentFilter = IntentFilter(ACTION_CHAT_MESSAGE)
         LocalBroadcastManager.getInstance(this).registerReceiver(messageReceiver!!, intentFilter)
+        isReceiverRegistered = true
+        Log.d(TAG, "Registered message receiver")
+    }
+    
+    private fun ensureNotificationServicesRunning() {
+        // No need to check if services are running too frequently
+        if (System.currentTimeMillis() - lastServiceCheck < 30000) {
+            return
+        }
+        lastServiceCheck = System.currentTimeMillis()
+        
+        try {
+            // Start WebSocket service which will start MessageNotificationDetectionService
+            val webSocketIntent = Intent(this, WebSocketService::class.java)
+            if (currentUser != null) {
+                webSocketIntent.putExtra(BundleKeys.KEY_INTERNAL_USER_ID, currentUser!!.id)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(webSocketIntent)
+            } else {
+                startService(webSocketIntent)
+            }
+            Log.d(TAG, "Ensured notification services are running")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start notification services", e)
+        }
     }
 
     private fun onQueryTextChange(newText: String?) {

@@ -217,6 +217,7 @@ import javax.inject.Inject
 import kotlin.collections.set
 import kotlin.math.roundToInt
 import androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia
+import com.nextcloud.talk.utils.NotificationCoordinator
 
 @AutoInjector(NextcloudTalkApplication::class)
 class ChatActivity :
@@ -404,9 +405,14 @@ class ChatActivity :
         }
     }
 
+    private lateinit var notificationCoordinator: NotificationCoordinator
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         NextcloudTalkApplication.sharedApplication!!.componentApplication.inject(this)
+
+        // Initialize notification coordinator
+        notificationCoordinator = NotificationCoordinator.getInstance(applicationContext)
 
         binding = ActivityChatBinding.inflate(layoutInflater)
         setupActionBar()
@@ -1156,6 +1162,12 @@ class ChatActivity :
         loadAvatarForStatusBar()
         setActionBarTitle()
         viewThemeUtils.material.colorToolbarOverflowIcon(binding.chatToolbar)
+
+        // Register this conversation as active
+        roomToken?.let { token ->
+            notificationCoordinator.enterConversation(token)
+            Log.d(TAG, "Registered room $token as active with NotificationCoordinator")
+        }
     }
 
     // private fun getLastAdapterId(): Int {
@@ -2359,6 +2371,12 @@ class ChatActivity :
 
         if (mentionAutocomplete != null && mentionAutocomplete!!.isPopupShowing) {
             mentionAutocomplete?.dismissPopup()
+        }
+
+        // Unregister this conversation as active
+        roomToken?.let { token ->
+            notificationCoordinator.leaveConversation(token)
+            Log.d(TAG, "Unregistered room $token from NotificationCoordinator")
         }
     }
 

@@ -141,22 +141,6 @@
             </intent-filter>
         </activity>
 
-        <!-- WebSocket Services -->
-        <service
-            android:name=".services.WebSocketService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="This service maintains a WebSocket connection to receive real-time notifications" />
-        </service>
-        
-        <service
-            android:name=".services.NCWebSocketNotificationService"
-            android:enabled="true"
-            android:exported="false" />
-            
         <activity
             android:name=".account.ServerSelectionActivity"
             android:theme="@style/AppTheme" />
@@ -344,6 +328,16 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="This service monitors chat messages for notifications" />
+        </service>
+
+        <service
+            android:name=".services.NotificationPollingService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="This service polls the Nextcloud API for notifications" />
         </service>
 
         <provider

@@ -646,4 +646,12 @@ public interface NcApi {
     @DELETE
     Observable<GenericOverall> rejectInvitation(@Header("Authorization") String authorization,
                                                 @Url String url);
+
+    /*
+        Server URL is: baseUrl + "/ocs/v2.php/apps/notifications/api/v2/notifications"
+        This endpoint uses Basic Auth with the username and password/token
+    */
+    @GET
+    Observable<Response<String>> getNotifications(@Header("Authorization") String authorization,
+                                                 @Header("Accept") String acceptHeader);
 }

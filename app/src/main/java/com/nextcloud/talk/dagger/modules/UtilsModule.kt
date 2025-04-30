@@ -41,6 +41,6 @@ class UtilsModule {
     @Provides
     @Singleton
     fun provideNotificationCoordinator(context: Context): NotificationCoordinator {
-        return NotificationCoordinator(context)
+        return NotificationCoordinator.getInstance(context)
     }
 }

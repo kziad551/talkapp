@@ -92,13 +92,23 @@ class WebSocketService : Service() {
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.d(TAG, "WebSocket connection closed. Code: $code, Reason: $reason")
             isConnecting = false
-            reconnectWithBackoff()
+            safeReconnectWithBackoff()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             Log.e(TAG, "WebSocket connection failure", t)
             isConnecting = false
-            reconnectWithBackoff()
+            
+            // Check if this is a 404 error - server doesn't support WebSockets
+            if (response?.code == 404) {
+                Log.w(TAG, "WebSocket endpoint not found (404). Your server might not support WebSockets. Falling back to polling.")
+                // Don't try to reconnect WebSocket but make sure polling service is running
+                ensurePollingServiceRunning()
+                return
+            }
+            
+            // For other errors, try to reconnect
+            safeReconnectWithBackoff()
         }
     }
 
@@ -159,6 +169,10 @@ class WebSocketService : Service() {
             }
         }
         
+        // Make sure the notification service is also started
+        startMessageNotificationService()
+        
+        // Using START_STICKY to ensure service restarts if killed
         return START_STICKY
     }
 
@@ -191,19 +205,29 @@ class WebSocketService : Service() {
         webSocketClient = okHttpClient.newWebSocket(request, webSocketListener)
     }
     
-    private fun reconnectWithBackoff() {
-        reconnectAttempts++
-        val delaySeconds = minOf(30, reconnectAttempts * 5) // Max 30 seconds backoff
-        
-        Log.d(TAG, "Reconnecting in $delaySeconds seconds (attempt $reconnectAttempts)")
-        
-        val runnable = Runnable {
-            currentUser?.let {
-                connectWebSocket(it)
-            }
+    private fun safeReconnectWithBackoff() {
+        try {
+            reconnectAttempts++
+            val delaySeconds = minOf(30, reconnectAttempts * 5) // Max 30 seconds backoff
+            
+            Log.d(TAG, "Reconnecting in $delaySeconds seconds (attempt $reconnectAttempts)")
+            
+            android.os.Handler().postDelayed({
+                try {
+                    currentUser?.let {
+                        connectWebSocket(it)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in delayed reconnect", e)
+                    // If reconnect fails, make sure polling service is running
+                    ensurePollingServiceRunning()
+                }
+            }, delaySeconds * 1000L)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error scheduling reconnect", e)
+            // If scheduling reconnect fails, make sure polling service is running
+            ensurePollingServiceRunning()
         }
-        
-        android.os.Handler().postDelayed(runnable, delaySeconds * 1000L)
     }
     
     private fun acquireWakeLock() {
@@ -216,22 +240,17 @@ class WebSocketService : Service() {
     
     private fun getWebSocketUrl(user: User): String {
         // Construct WebSocket URL based on user and server info
-        return "wss://nextcloud.wztechno.com/apps/spreed/ws"
+        val baseUrl = user.baseUrl?.trim('/') ?: ""
+        return "$baseUrl/apps/spreed/ws"
     }
     
     private fun buildAuthenticationMessage(): String {
-        // Build authentication message with the hardcoded keys
+        // Build authentication message for the current user
         return """
             {
                 "type": "hello",
                 "hello": {
-                    "version": "1.0",
-                    "auth": {
-                        "hashKey": "$HASH_KEY",
-                        "blockKey": "$BLOCK_KEY",
-                        "backend": "$BACKEND_URL",
-                        "secret": "$BACKEND_SECRET"
-                    }
+                    "version": "1.0"
                 }
             }
         """.trimIndent()
@@ -239,12 +258,49 @@ class WebSocketService : Service() {
     
     private fun handleWebSocketMessage(message: String) {
         // Process the WebSocket message and create notifications if needed
-        // This would dispatch to NCWebSocketNotificationService for handling
-        val intent = Intent(this, NCWebSocketNotificationService::class.java).apply {
-            putExtra("websocket_message", message)
-            putExtra(BundleKeys.KEY_INTERNAL_USER_ID, currentUser?.id)
+        try {
+            val jsonObject = org.json.JSONObject(message)
+            val type = jsonObject.optString("type", "")
+            
+            // Forward to NCWebSocketNotificationService for notification processing
+            val intent = Intent(this, NCWebSocketNotificationService::class.java).apply {
+                putExtra("websocket_message", message)
+                putExtra(BundleKeys.KEY_INTERNAL_USER_ID, currentUser?.id)
+            }
+            startService(intent)
+            
+            // If this is a message, we need to also broadcast directly to refresh conversation list immediately
+            if (type == "message" || type == "event") {
+                var roomToken = ""
+                var timestamp = System.currentTimeMillis()
+                
+                // Extract room token based on message type
+                if (type == "message") {
+                    val messageObj = jsonObject.optJSONObject("message")
+                    roomToken = messageObj?.optString("roomId", "") ?: ""
+                } else if (type == "event") {
+                    val eventObj = jsonObject.optJSONObject("event")
+                    if (eventObj?.optString("target", "") == "room") {
+                        roomToken = eventObj.optString("roomid", "")
+                    }
+                }
+                
+                if (roomToken.isNotEmpty()) {
+                    // Get NotificationCoordinator
+                    val notificationCoordinator = com.nextcloud.talk.utils.NotificationCoordinator.getInstance(this)
+                    // Broadcast directly using the coordinator
+                    notificationCoordinator.broadcastMessageUpdate(roomToken, timestamp)
+                    Log.d(TAG, "WebSocket directly broadcasted message update for room: $roomToken")
+                }
+            }
+            
+            // Start the MessageNotificationDetectionService if we don't have any active listeners
+            if (messageListeners.isEmpty()) {
+                startMessageNotificationService()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling WebSocket message", e)
         }
-        startService(intent)
     }
     
     private fun registerMessageListener(serviceId: String) {
@@ -286,5 +342,37 @@ class WebSocketService : Service() {
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
+    }
+    
+    private fun startMessageNotificationService() {
+        try {
+            val notificationServiceIntent = Intent(this, MessageNotificationDetectionService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(notificationServiceIntent)
+            } else {
+                startService(notificationServiceIntent)
+            }
+            Log.d(TAG, "Started MessageNotificationDetectionService")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start MessageNotificationDetectionService", e)
+        }
+        
+        // Also ensure polling service is running as a more reliable option
+        ensurePollingServiceRunning()
+    }
+    
+    private fun ensurePollingServiceRunning() {
+        try {
+            // Make sure polling service is running as fallback
+            val pollingIntent = Intent(this, NotificationPollingService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(pollingIntent)
+            } else {
+                startService(pollingIntent)
+            }
+            Log.d(TAG, "Ensuring NotificationPollingService is running as fallback")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start NotificationPollingService", e)
+        }
     }
 } 
