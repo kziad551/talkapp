@@ -15,6 +15,10 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.annotation.SuppressLint
 import android.app.KeyguardManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.DialogInterface
 import android.content.Intent
@@ -32,6 +36,7 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.drawable.toDrawable
@@ -67,7 +72,6 @@ import com.nextcloud.talk.jobs.ContactAddressBookWorker.Companion.deleteAll
 import com.nextcloud.talk.models.json.generic.GenericOverall
 import com.nextcloud.talk.models.json.userprofile.UserProfileOverall
 import com.nextcloud.talk.profile.ProfileActivity
-import com.nextcloud.talk.services.NCWebSocketNotificationService
 import com.nextcloud.talk.ui.dialog.SetPhoneNumberDialogFragment
 import com.nextcloud.talk.users.UserManager
 import com.nextcloud.talk.utils.ApiUtils
@@ -657,35 +661,86 @@ class SettingsActivity :
      * Shows a test notification using the app's notification system
      */
     private fun showTestNotification() {
-        if (currentUser == null) return
-        
-        // Create a test message in the format expected by NCWebSocketNotificationService
-        val testMessage = """
-            {
-                "type": "message",
-                "message": {
-                    "roomId": "testRoom",
-                    "message": "${getString(R.string.nc_test_notification_message)}",
-                    "actorId": "testSender",
-                    "timestamp": ${System.currentTimeMillis() / 1000}
-                }
-            }
-        """.trimIndent()
-        
-        // Send to notification service
-        val intent = Intent(this, NCWebSocketNotificationService::class.java).apply {
-            putExtra("websocket_message", testMessage)
-            putExtra(BundleKeys.KEY_INTERNAL_USER_ID, currentUser?.id)
+        if (currentUser == null) {
+            Toast.makeText(
+                this,
+                "No user found - please log in first",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
         }
         
-        startService(intent)
-        
-        // Show confirmation toast
-        Toast.makeText(
-            this,
-            "Test notification sent",
-            Toast.LENGTH_SHORT
-        ).show()
+        try {
+            Log.d(TAG, "Creating test notification...")
+            
+            // Create notification channel if needed (Android 8.0+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    "test_channel",
+                    "Test Notifications",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Channel for notification tests"
+                    enableLights(true)
+                    lightColor = android.graphics.Color.GREEN
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 250, 250, 250)
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                }
+                
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.createNotificationChannel(channel)
+                Log.d(TAG, "Created test notification channel")
+            }
+            
+            // Create the notification intent
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            
+            val pendingIntent = PendingIntent.getActivity(
+                this, 
+                12345, // unique request code 
+                intent, 
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            
+            // Build the notification
+            val notification = NotificationCompat.Builder(this, "test_channel")
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Nextcloud Talk Test")
+                .setContentText(getString(R.string.nc_test_notification_message))
+                .setSubText("Test notification from settings")
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setWhen(System.currentTimeMillis())
+                .setShowWhen(true)
+                .build()
+            
+            // Show the notification
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(9876, notification)
+            
+            Log.d(TAG, "Test notification sent successfully!")
+            
+            // Show confirmation toast
+            Toast.makeText(
+                this,
+                "Test notification sent! Check your notification area.",
+                Toast.LENGTH_LONG
+            ).show()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error creating test notification", e)
+            Toast.makeText(
+                this,
+                "Error sending test notification: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun showRemoveAccountWarning() {

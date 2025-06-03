@@ -60,24 +60,24 @@ object MessageNotificationServiceUtil {
             
             // Always start the polling service regardless of permission
             // The service itself will check permission before showing notifications
-            try {
+                    try {
                 val intent = Intent(appContext, NotificationPollingService::class.java)
-                
+                        
                 // Set any extra parameters for the service here
                 intent.putExtra("POLL_INTERVAL", 10L) // Set to 10 seconds for faster polling
                 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     Log.d(TAG, "Starting service as foreground service (Android O+)")
-                    appContext.startForegroundService(intent)
-                } else {
+                            appContext.startForegroundService(intent)
+                        } else {
                     Log.d(TAG, "Starting service as background service (pre-Android O)")
-                    appContext.startService(intent)
-                }
+                            appContext.startService(intent)
+                        }
                 Log.d(TAG, "Notification polling service started, can show notifications: $hasPermission")
                 
                 // Also schedule an alarm to restart the service if it gets killed
                 scheduleServiceRestart(context)
-            } catch (e: Exception) {
+                    } catch (e: Exception) {
                 Log.e(TAG, "Error starting polling service", e)
             }
             

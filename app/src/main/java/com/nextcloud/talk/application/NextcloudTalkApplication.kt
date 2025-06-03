@@ -71,6 +71,7 @@ import java.security.Security
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.nextcloud.talk.notification.PingForegroundService
 
 @AutoComponent(
     modules = [
@@ -201,20 +202,16 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
     }
 
     private fun startNotificationServices() {
-        // No need to start services if we don't have a valid user
-        val currentUser = userManager.currentUser?.blockingGet() ?: return
+        Log.d(TAG, "startNotificationServices() called")
         
-        // Only use the polling service - we're disabling WebSocket completely
+        // Re-enabling PingForegroundService with enhanced error handling for debugging
         try {
-            val pollingIntent = Intent(this, com.nextcloud.talk.services.NotificationPollingService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(pollingIntent)
-            } else {
-                startService(pollingIntent)
-            }
-            Log.d(TAG, "Started NotificationPollingService for reliable notifications")
+            Log.d(TAG, "Attempting to start PingForegroundService...")
+            PingForegroundService.start(this)
+            Log.d(TAG, "✅ Successfully started PingForegroundService for chat notifications")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start NotificationPollingService", e)
+            Log.e(TAG, "❌ Failed to start PingForegroundService: ${e.message}", e)
+            Log.e(TAG, "❌ Stack trace: ${e.stackTrace.joinToString("\n")}")
         }
     }
 

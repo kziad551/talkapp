@@ -35,7 +35,7 @@ open class NotificationCoordinator private constructor(private val context: Cont
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: try {
                     NotificationCoordinator(context.applicationContext).also { 
-                        INSTANCE = it 
+                    INSTANCE = it 
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error creating NotificationCoordinator", e)
@@ -128,12 +128,12 @@ open class NotificationCoordinator private constructor(private val context: Cont
      */
     open fun broadcastMessageUpdate(roomToken: String, timestamp: Long) {
         try {
-            val intent = Intent(CHAT_REFRESH_MESSAGE).apply {
-                putExtra(KEY_CONVERSATION_TOKEN, roomToken)
-                putExtra(KEY_TIMESTAMP, timestamp)
-            }
-            
-            LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+        val intent = Intent(CHAT_REFRESH_MESSAGE).apply {
+            putExtra(KEY_CONVERSATION_TOKEN, roomToken)
+            putExtra(KEY_TIMESTAMP, timestamp)
+        }
+        
+        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
             Log.d(TAG, "Broadcast message update for room: $roomToken at timestamp: $timestamp")
         } catch (e: Exception) {
             Log.e(TAG, "Error broadcasting message update", e)

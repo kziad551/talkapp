@@ -6,7 +6,6 @@
 package com.nextcloud.talk.dagger.modules
 
 import com.nextcloud.talk.services.MessageNotificationDetectionService
-import com.nextcloud.talk.services.NotificationPollingService
 import dagger.Module
 import dagger.Provides
 import javax.inject.Singleton
@@ -18,11 +17,5 @@ class ServicesModule {
     @Singleton
     fun providesMessageNotificationDetectionService(): MessageNotificationDetectionService {
         return MessageNotificationDetectionService()
-    }
-    
-    @Provides
-    @Singleton
-    fun providesNotificationPollingService(): NotificationPollingService {
-        return NotificationPollingService()
     }
 } 
