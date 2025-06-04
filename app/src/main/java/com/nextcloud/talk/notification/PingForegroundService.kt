@@ -256,6 +256,20 @@ class PingForegroundService : Service() {
                     continue   // already shown
                 }
 
+                // 🚫 Skip notifications for messages sent by current user
+                if (getUser() != null && sender.equals(getUser(), ignoreCase = true)) {
+                    Log.d(TAG, "🚫 Skipping self-sent message:")
+                    Log.d(TAG, "   👤 Current user: '${getUser()}'")
+                    Log.d(TAG, "   📤 Message sender: '$sender'")
+                    Log.d(TAG, "   💬 Message: '$msgTxt'")
+                    Log.d(TAG, "   ⏭️ Updating message ID and continuing...")
+                    
+                    // Still update the message ID to mark it as seen
+                    memorised[token] = msgId
+                    somethingNew = true
+                    continue
+                }
+
                 val title = if (sender.isNotBlank())
                     "$sender in $roomName" else "Message in $roomName"
 
