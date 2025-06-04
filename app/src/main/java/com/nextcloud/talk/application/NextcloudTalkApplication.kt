@@ -202,17 +202,19 @@ class NextcloudTalkApplication : MultiDexApplication(), LifecycleObserver {
     }
 
     private fun startNotificationServices() {
-        Log.d(TAG, "startNotificationServices() called")
+        Log.d(TAG, "🚀 startNotificationServices() called")
         
         // Re-enabling PingForegroundService with enhanced error handling for debugging
         try {
-            Log.d(TAG, "Attempting to start PingForegroundService...")
+            Log.d(TAG, "🔧 Attempting to start PingForegroundService...")
             PingForegroundService.start(this)
             Log.d(TAG, "✅ Successfully started PingForegroundService for chat notifications")
         } catch (e: Exception) {
             Log.e(TAG, "❌ Failed to start PingForegroundService: ${e.message}", e)
             Log.e(TAG, "❌ Stack trace: ${e.stackTrace.joinToString("\n")}")
         }
+        
+        Log.d(TAG, "🏁 startNotificationServices() completed")
     }
 
     override fun onTerminate() {

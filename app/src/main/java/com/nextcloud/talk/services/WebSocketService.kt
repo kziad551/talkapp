@@ -153,6 +153,10 @@ class WebSocketService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForeground(NOTIFICATION_ID, createNotification())
         
+        // DISABLED WebSocket - using API polling only
+        Log.d(TAG, "WebSocket disabled - using API polling only via PingForegroundService")
+        
+        /*
         if (intent?.hasExtra(BundleKeys.KEY_INTERNAL_USER_ID) == true) {
             val userId = intent.getLongExtra(BundleKeys.KEY_INTERNAL_USER_ID, -1)
             if (userId != -1L) {
@@ -168,6 +172,7 @@ class WebSocketService : Service() {
                 connectWebSocket(it)
             }
         }
+        */
         
         // Make sure the notification service is also started
         startMessageNotificationService()
@@ -363,16 +368,11 @@ class WebSocketService : Service() {
     
     private fun ensurePollingServiceRunning() {
         try {
-            // Make sure polling service is running as fallback
-            val pollingIntent = Intent(this, NotificationPollingService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(pollingIntent)
-            } else {
-                startService(pollingIntent)
-            }
-            Log.d(TAG, "Ensuring NotificationPollingService is running as fallback")
+            // Make sure our new PingForegroundService is running as fallback
+            com.nextcloud.talk.notification.PingForegroundService.start(this)
+            Log.d(TAG, "Ensuring PingForegroundService is running as fallback")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start NotificationPollingService", e)
+            Log.e(TAG, "Failed to start PingForegroundService", e)
         }
     }
 } 
