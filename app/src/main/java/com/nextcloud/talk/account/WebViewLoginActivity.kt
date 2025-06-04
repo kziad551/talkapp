@@ -44,6 +44,7 @@ import com.nextcloud.talk.events.CertificateEvent
 import com.nextcloud.talk.jobs.AccountRemovalWorker
 import com.nextcloud.talk.models.LoginData
 import com.nextcloud.talk.users.UserManager
+import com.nextcloud.talk.utils.CredentialsUtil
 import com.nextcloud.talk.utils.bundle.BundleKeys
 import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_BASE_URL
 import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_ORIGINAL_PROTOCOL
@@ -328,6 +329,15 @@ class WebViewLoginActivity : BaseActivity() {
         if (loginData != null) {
             dispose()
             cookieManager.cookieStore.removeAll()
+
+            // Save credentials securely for PingForegroundService to use
+            Log.d(TAG, "💾 Saving login credentials for user: ${loginData.username} at ${loginData.serverUrl}")
+            CredentialsUtil.saveCredentials(
+                this,
+                loginData.serverUrl!!,
+                loginData.username!!,
+                loginData.token!!
+            )
 
             if (userManager.checkIfUserIsScheduledForDeletion(loginData.username!!, baseUrl!!).blockingGet()) {
                 Log.e(TAG, "Tried to add already existing user who is scheduled for deletion.")

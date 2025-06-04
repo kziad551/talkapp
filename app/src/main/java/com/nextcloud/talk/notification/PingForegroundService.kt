@@ -14,6 +14,7 @@ import com.nextcloud.talk.R
 import com.nextcloud.talk.BuildConfig
 import com.nextcloud.talk.chat.ChatActivity
 import com.nextcloud.talk.conversationlist.ConversationsListActivity
+import com.nextcloud.talk.utils.CredentialsUtil
 import com.nextcloud.talk.utils.NotificationPermissionHelper
 import com.nextcloud.talk.utils.bundle.BundleKeys
 import java.io.StringReader
@@ -127,11 +128,22 @@ class PingForegroundService : Service() {
 
     private suspend fun poll() {
         Log.d(TAG, "🔍 poll() called - determining credentials...")
+        
+        // Check if we have saved credentials
+        if (!CredentialsUtil.hasCredentials(this)) {
+            Log.w(TAG, "⚠️ No credentials found - user needs to log in first")
+            Log.d(TAG, "💡 To enable push notifications:")
+            Log.d(TAG, "   1. Open the Nextcloud Talk app") 
+            Log.d(TAG, "   2. Log in with your username and password")
+            Log.d(TAG, "   3. Credentials will be saved automatically for notifications")
+            return // Skip polling until user logs in
+        }
+        
         val server = getServer() ?: return
         val user   = getUser() ?: return
         val pass   = getPass() ?: return
 
-        Log.d(TAG, "🔑 Using credentials - Server: $server, User: $user, Pass: ${if(pass.isNotEmpty()) "[HIDDEN]" else "[EMPTY]"}")
+        Log.d(TAG, "🔑 Using saved credentials - Server: $server, User: $user")
         
         if (pollRooms(server, user, pass)) {
             Log.d(TAG, "✅ Poll successful, resetting error count")
@@ -444,39 +456,36 @@ class PingForegroundService : Service() {
         return false 
     }
 
-    /* ---------- account helpers (real mode) ---------- */
+    /* ---------- account helpers (using saved credentials) ---------- */
     private fun getServer(): String? {
-        val result = acc()?.second
+        val result = CredentialsUtil.getServerUrl(this)
         Log.d(TAG, "🔑 getServer() = $result")
         
-        // TEMPORARY: Fallback to hardcoded server for testing
         if (result == null) {
-            Log.d(TAG, "🔧 No account found, using hardcoded server for testing")
-            return "https://nextcloud.wztechno.com"
+            Log.w(TAG, "⚠️ No server URL found in saved credentials")
+            Log.d(TAG, "💡 Please log in through the app to save credentials for push notifications")
         }
         return result
     }
     
     private fun getUser(): String? {
-        val result = acc()?.first
+        val result = CredentialsUtil.getUsername(this)
         Log.d(TAG, "🔑 getUser() = $result")
         
-        // TEMPORARY: Fallback to hardcoded user for testing
         if (result == null) {
-            Log.d(TAG, "🔧 No account found, using hardcoded user for testing")
-            return "admin"
+            Log.w(TAG, "⚠️ No username found in saved credentials")
+            Log.d(TAG, "💡 Please log in through the app to save credentials for push notifications")
         }
         return result
     }
     
     private fun getPass(): String? {
-        val result = accPw()
+        val result = CredentialsUtil.getPassword(this)
         Log.d(TAG, "🔑 getPass() = ${if(result?.isNotEmpty() == true) "[HIDDEN]" else "[EMPTY]"}")
         
-        // TEMPORARY: Fallback to hardcoded password for testing
         if (result == null || result.isEmpty()) {
-            Log.d(TAG, "🔧 No account found, using hardcoded password for testing")
-            return "admin"
+            Log.w(TAG, "⚠️ No password found in saved credentials")
+            Log.d(TAG, "💡 Please log in through the app to save credentials for push notifications")
         }
         return result
     }

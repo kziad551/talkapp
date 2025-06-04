@@ -42,6 +42,7 @@ import com.nextcloud.talk.models.json.userprofile.UserProfileOverall
 import com.nextcloud.talk.users.UserManager
 import com.nextcloud.talk.utils.ApiUtils
 import com.nextcloud.talk.utils.ClosedInterfaceImpl
+import com.nextcloud.talk.utils.CredentialsUtil
 import com.nextcloud.talk.utils.UriUtils
 import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_BASE_URL
 import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_INTERNAL_USER_ID
@@ -235,6 +236,15 @@ class AccountVerificationActivity : BaseActivity() {
     }
 
     private fun storeProfile(displayName: String?, userId: String, capabilitiesOverall: CapabilitiesOverall) {
+        // Save credentials securely for PingForegroundService to use
+        Log.d(TAG, "💾 Saving verified credentials for user: $username at $baseUrl")
+        CredentialsUtil.saveCredentials(
+            this,
+            baseUrl!!,
+            username!!,
+            token!!
+        )
+        
         userManager.storeProfile(
             username,
             UserManager.UserAttributes(
