@@ -16,6 +16,9 @@ import com.nextcloud.talk.chat.ChatActivity
 import com.nextcloud.talk.conversationlist.ConversationsListActivity
 import com.nextcloud.talk.utils.CredentialsUtil
 import com.nextcloud.talk.utils.NotificationPermissionHelper
+import com.nextcloud.talk.utils.NotificationUtils
+import com.nextcloud.talk.utils.preferences.AppPreferencesImpl
+import com.nextcloud.talk.callnotification.CallNotificationActivity
 import com.nextcloud.talk.utils.bundle.BundleKeys
 import java.io.StringReader
 import java.util.concurrent.TimeUnit
@@ -47,6 +50,7 @@ class PingForegroundService : Service() {
     private val PREFS          = "PingServicePrefs"
     private val KEY_ERRORS     = "errors"
     private val KEY_LAST_IDS   = "last_msg_ids"   // <roomToken, msgId>
+    private val KEY_LAST_CALLS = "last_call_ids"  // <roomToken, callStartTime>
 
     private val ROOMS_API      = "/ocs/v2.php/apps/spreed/api/v4/room?includeStatus=1"
 
@@ -195,6 +199,7 @@ class PingForegroundService : Service() {
                 .parse(InputSource(StringReader(xml)))
             val rooms = doc.getElementsByTagName("element")
             val memorised = getIdMap()
+            val callMemorised = getCallMap()
             var somethingNew = false
 
             Log.d(TAG, "🏠 Found ${rooms.length} rooms in XML")
@@ -207,6 +212,16 @@ class PingForegroundService : Service() {
                 val token     = e.text("token")
                 val unread    = e.text("unreadMessages").trim().toIntOrNull() ?: 0
                 val roomName  = e.text("displayName")
+                val callFlag  = e.text("callFlag").trim().toIntOrNull() ?: 0
+                val callStart = e.text("callStartTime").trim().toLongOrNull() ?: 0L
+                val hasCall   = e.text("hasCall").trim().equals("true", true)
+
+                if ((hasCall || callFlag > 0 || callStart > 0) &&
+                    callMemorised[token] != callStart) {
+                    showCall(roomName, token, callFlag, callStart)
+                    callMemorised[token] = callStart
+                    somethingNew = true
+                }
                 
                 Log.d(TAG, "🏠 Room #$i: token='$token', name='$roomName', unreadMessages=$unread")
                 
@@ -290,6 +305,7 @@ class PingForegroundService : Service() {
 
             if (somethingNew) {
                 saveIdMap(memorised)
+                saveCallMap(callMemorised)
                 Log.d(TAG, "💾 Saved updated message IDs to storage: $memorised")
             } else {
                 Log.d(TAG, "📭 No new messages found in any rooms")
@@ -383,6 +399,56 @@ class PingForegroundService : Service() {
         }
     }
 
+    private fun showCall(roomName: String, token: String, callFlag: Int, callStart: Long) {
+        try {
+            val appPreferences = AppPreferencesImpl(this)
+            val intent = Intent(this, CallNotificationActivity::class.java).apply {
+                putExtra(BundleKeys.KEY_ROOM_TOKEN, token)
+                putExtra(BundleKeys.KEY_NOTIFICATION_TIMESTAMP, callStart.toInt())
+                putExtra(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName)
+                putExtra(BundleKeys.KEY_CONVERSATION_NAME, roomName)
+                putExtra(BundleKeys.KEY_CALL_FLAG, callFlag)
+                putExtra(BundleKeys.KEY_ROOM_ONE_TO_ONE, false)
+                putExtra(BundleKeys.KEY_FROM_NOTIFICATION_START_CALL, true)
+                putExtra(BundleKeys.KEY_INTERNAL_USER_ID, -1L)
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+
+            val requestCode = System.currentTimeMillis().toInt()
+            val fullScreenPendingIntent = PendingIntent.getActivity(
+                this,
+                requestCode,
+                intent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val soundUri = NotificationUtils.getCallRingtoneUri(this, appPreferences)
+            val notification = NotificationCompat.Builder(
+                this,
+                NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name
+            )
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setSmallIcon(R.drawable.ic_call_black_24dp)
+                .setContentTitle(roomName)
+                .setAutoCancel(false)
+                .setOngoing(true)
+                .setContentIntent(fullScreenPendingIntent)
+                .setFullScreenIntent(fullScreenPendingIntent, true)
+                .setSound(soundUri)
+                .build()
+            notification.flags = notification.flags or Notification.FLAG_INSISTENT
+
+            getSystemService(NotificationManager::class.java)
+                .notify(callStart.toInt(), notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show call notification", e)
+        }
+    }
+
     private fun createGroupSummaryNotification(nm: NotificationManager) {
         Log.d(TAG, "📊 Creating/updating group summary notification")
         
@@ -438,7 +504,7 @@ class PingForegroundService : Service() {
     /* ---------- SharedPreferences helpers ---------- */
     private fun getIdMap(): MutableMap<String,String> {
         val stored = p.getString(KEY_LAST_IDS, "{}") ?: "{}"
-        Log.d(TAG, "💾 Loading stored message IDs: $stored")
+        Log.d(TAG, "\uD83D\uDCBE Loading stored message IDs: $stored")
         return JSONObject(stored).let { json ->
             mutableMapOf<String,String>().apply {
                 for (k in json.keys()) this[k] = json.getString(k)
@@ -446,10 +512,26 @@ class PingForegroundService : Service() {
         }
     }
 
+    private fun getCallMap(): MutableMap<String,Long> {
+        val stored = p.getString(KEY_LAST_CALLS, "{}") ?: "{}"
+        Log.d(TAG, "\uD83D\uDCBE Loading stored call IDs: $stored")
+        return JSONObject(stored).let { json ->
+            mutableMapOf<String,Long>().apply {
+                for (k in json.keys()) this[k] = json.getLong(k)
+            }
+        }
+    }
+
     private fun saveIdMap(m: Map<String,String>) {
         val jsonString = JSONObject(m).toString()
-        Log.d(TAG, "💾 Saving message IDs: $jsonString")
+        Log.d(TAG, "\uD83D\uDCBE Saving message IDs: $jsonString")
         p.edit().putString(KEY_LAST_IDS, jsonString).apply()
+    }
+
+    private fun saveCallMap(m: Map<String,Long>) {
+        val jsonString = JSONObject(m).toString()
+        Log.d(TAG, "\uD83D\uDCBE Saving call IDs: $jsonString")
+        p.edit().putString(KEY_LAST_CALLS, jsonString).apply()
     }
 
     /* ---------- error/backoff helpers ---------- */
