@@ -1,5 +1,6 @@
 package com.nextcloud.talk.notification
 
+import android.Manifest
 import android.app.*
 import android.content.Context
 import android.content.Intent
@@ -17,6 +18,7 @@ import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.TaskStackBuilder
+import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import autodagger.AutoInjector
 import com.nextcloud.talk.R
@@ -424,11 +426,14 @@ class PingForegroundService : Service() {
                 val messageText = msgTxt.lowercase()
                 val isCallRelatedMessage = messageText.contains("ended the call") || 
                                          messageText.contains("call ended") ||
+                                         messageText.contains("started a call") ||
+                                         messageText.contains("started the call") ||
                                          messageText.contains("duration") ||
                                          messageText.contains("unanswered call") ||
                                          messageText.contains("missed call") ||
                                          messageText.contains("call with") ||
                                          messageText.contains("{actor} ended") ||
+                                         messageText.contains("{actor} started") ||
                                          messageText.contains("{user1}")
                 
                 if (isCallRelatedMessage) {
@@ -524,19 +529,24 @@ class PingForegroundService : Service() {
 
             // Create individual message notification (child of group)
             val notification = NotificationCompat.Builder(this, CH_CHAT)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setAutoCancel(true)
-            .setContentIntent(pi)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setAutoCancel(true)
+                .setContentIntent(pi)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setDefaults(NotificationCompat.DEFAULT_ALL)
+                .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE or NotificationCompat.DEFAULT_LIGHTS)  // 🔧 Be specific about defaults
                 .setGroup(GROUP_CHAT)           // Add to group
                 .setGroupSummary(false)         // This is a child notification
-            .build()
+                .setShowWhen(true)              // 🔧 Show timestamp for push notification
+                .setWhen(System.currentTimeMillis())  // 🔧 Set current time
+                .setTicker(text)               // 🔧 Show ticker text for banner notification
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))  // 🔧 Allow expanded text
+                .setOnlyAlertOnce(false)       // 🔧 Allow alerts for each new message
+                .build()
 
-            // Add FLAG_INSISTENT like NotificationWorker
-            notification.flags = notification.flags or Notification.FLAG_INSISTENT
+            // 🔧 REMOVED: Don't add FLAG_INSISTENT for chat messages (only for calls)
+            // notification.flags = notification.flags or Notification.FLAG_INSISTENT
             
             // Android 14+ introduces a user setting controlling full-screen intents
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !nm.canUseFullScreenIntent()) {
@@ -562,12 +572,6 @@ class PingForegroundService : Service() {
     }
 
     private fun showCall(roomName: String, token: String, callFlag: Int, callStart: Long) {
-        Log.d(TAG, "🔔 showCall() called - Creating call notification exactly like NotificationWorker")
-        Log.d(TAG, "   🏠 Room: '$roomName'")
-        Log.d(TAG, "   🎫 Token: '$token'")
-        Log.d(TAG, "   🚩 Call Flag: $callFlag")
-        Log.d(TAG, "   ⏰ Call Start: $callStart")
-        
         try {
             val appPreferences = AppPreferencesImpl(this)
             val currentUser = currentUserProvider.currentUser.blockingGet()
@@ -608,6 +612,9 @@ class PingForegroundService : Service() {
                 putExtra(KEY_CONVERSATION_NAME, roomName)
                 putExtra(KEY_RECORDING_STATE, 0) // No recording by default
                 
+                // 🔧 ADD MISSING: Key bundle parameters from original NotificationWorker
+                putExtra(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName) // Ensure this is set
+                
                 Log.d(TAG, "🔧 Creating incoming call notification intent:")
                 Log.d(TAG, "   📞 FROM_NOTIFICATION_START_CALL: true")
                 Log.d(TAG, "   🎫 Room Token: $token")
@@ -625,23 +632,80 @@ class PingForegroundService : Service() {
                     PendingIntent.FLAG_UPDATE_CURRENT
             )
             
-            // Create call notification
-            val soundUri = NotificationUtils.getCallRingtoneUri(this, appPreferences)
+            // 🔧 NEW: Create Answer action (voice-only call)
+            val answerVoiceIntent = Intent(this, CallNotificationActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtras(fullScreenIntent.extras!!)
+                putExtra(KEY_CALL_VOICE_ONLY, true)
+                action = "ANSWER_VOICE"
+            }
+            
+            val answerVoicePendingIntent = PendingIntent.getActivity(
+                this,
+                (notificationTimestamp + 1).toInt(),
+                answerVoiceIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            
+            // 🔧 NEW: Create Answer with Video action
+            val answerVideoIntent = Intent(this, CallNotificationActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtras(fullScreenIntent.extras!!)
+                putExtra(KEY_CALL_VOICE_ONLY, false)
+                action = "ANSWER_VIDEO"
+            }
+            
+            val answerVideoPendingIntent = PendingIntent.getActivity(
+                this,
+                (notificationTimestamp + 2).toInt(),
+                answerVideoIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            
+            // 🔧 NEW: Create Decline action  
+            val declineIntent = Intent(this, CallNotificationActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtras(fullScreenIntent.extras!!)
+                action = "DECLINE_CALL"
+            }
+            
+            val declinePendingIntent = PendingIntent.getActivity(
+                this,
+                (notificationTimestamp + 3).toInt(),
+                declineIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            
+            // Create call notification exactly like original NotificationWorker
+            val soundUri = NotificationUtils.getCallRingtoneUri(applicationContext, appPreferences)
             val notificationChannelId = NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name
-            val notification = NotificationCompat.Builder(this, notificationChannelId)
-                .setSmallIcon(R.drawable.ic_call_white_24dp)
+            val notification = NotificationCompat.Builder(applicationContext, notificationChannelId)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)        // 🔧 Match original priority
                 .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setSmallIcon(R.drawable.ic_call_black_24dp)          // 🔧 Use same icon as original  
+                .setSubText(currentUser.baseUrl?.let { android.net.Uri.parse(it).host }) // 🔧 Add base URL like original
+                .setShowWhen(true)                                    // 🔧 Add missing from original
+                .setWhen(notificationTimestamp)                       // 🔧 Add missing from original
                 .setContentTitle(roomName)
                 .setContentText("Incoming call...")
-                .setOngoing(true)
-                .setAutoCancel(false)
-                .setDefaults(0) // No default sound/vibration, we set custom
-                .setSound(soundUri, AudioManager.STREAM_RING)
-                .setVibrate(longArrayOf(0, 1000, 1000, 1000))
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setOngoing(true)                    // 🔧 CRITICAL: Keep notification persistent
+                .setAutoCancel(false)               // 🔧 CRITICAL: Don't auto-cancel (required for full-screen)
+                .setSound(soundUri)                                   // 🔧 Simplified sound setting like original
                 .setFullScreenIntent(fullScreenPendingIntent, true)
                 .setContentIntent(fullScreenPendingIntent)
+                // 🔧 NEW: Add notification action buttons for swipe-down interface
+                .addAction(R.drawable.ic_call_white_24dp, "Voice", answerVoicePendingIntent)
+                .addAction(R.drawable.ic_baseline_videocam_24, "Video", answerVideoPendingIntent)
+                .addAction(R.drawable.ic_call_end_white_24px, "Decline", declinePendingIntent)
                 .build()
             
             // Apply FLAG_INSISTENT for continuous ringing
@@ -652,18 +716,23 @@ class PingForegroundService : Service() {
             Log.d(TAG, "   📳 Vibration: ON")
             Log.d(TAG, "   🚨 FLAG_INSISTENT: ON")
             Log.d(TAG, "   📱 Full-screen intent: YES")
+            Log.d(TAG, "   🔘 Action buttons: Voice, Video, Decline")
             
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            
-            // Android 14+ introduces a user setting controlling full-screen intents
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !notificationManager.canUseFullScreenIntent()) {
-                // If permission was denied, inform the user how to enable it
-                showFullScreenPermissionGuidance()
+            // 🔧 CRITICAL: Use same permission check and notification method as original NotificationWorker
+            Log.d(TAG, "show notification with id $notificationTimestamp")
+            if (ContextCompat.checkSelfPermission(
+                    applicationContext,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.e(TAG, "❌ POST_NOTIFICATIONS permission not granted - cannot show call notification")
+                return
             }
             
-            notificationManager.notify(notificationTimestamp.toInt(), notification)
+            val notificationManagerCompat = NotificationManagerCompat.from(applicationContext)
+            notificationManagerCompat.notify(notificationTimestamp.toInt(), notification)
             
-            Log.d(TAG, "✅ Call notification created successfully")
+            Log.d(TAG, "✅ Call notification created successfully with action buttons")
             
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error creating call notification", e)
@@ -736,7 +805,8 @@ class PingForegroundService : Service() {
     private fun createGroupSummaryNotification(nm: NotificationManager) {
         Log.d(TAG, "📊 Creating/updating group summary notification")
         
-        // Simple summary notification
+        // 🔧 CRITICAL FIX: Make group summary notification SILENT to prevent duplicate sounds
+        // Individual notifications should handle sound/vibration, not the group summary
         val summaryNotification = NotificationCompat.Builder(this, CH_CHAT)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("New Talk messages")
@@ -745,15 +815,17 @@ class PingForegroundService : Service() {
                 .addLine("Multiple conversations have new messages")
                 .setBigContentTitle("Nextcloud Talk")
                 .setSummaryText("New messages"))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)     // 🔧 Reduced from HIGH to DEFAULT
             .setGroup(GROUP_CHAT)           // Same group
             .setGroupSummary(true)          // This IS the summary
             .setAutoCancel(true)
+            .setSilent(true)               // 🔧 CRITICAL: Make group summary silent
+            .setOnlyAlertOnce(true)        // 🔧 Only alert once to prevent spam
             .build()
 
         nm.notify(SUMMARY_ID, summaryNotification)
-        Log.d(TAG, "✅ Group summary notification posted with ID 999999")
-        Log.d(TAG, "✅ Notification triggered and message ID saved")
+        Log.d(TAG, "✅ Group summary notification posted with ID 999999 (SILENT)")
+        Log.d(TAG, "✅ Individual notifications will handle sound/vibration")
         
         // 🔧 PREVENTIVE CLEANUP: Schedule cleanup to prevent group summary from becoming persistently noisy
         handler.postDelayed({

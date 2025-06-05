@@ -87,6 +87,10 @@ class CallNotificationActivity : CallBaseActivity() {
         Log.d(TAG, "   👤 User ID: $internalUserId")
         Log.d(TAG, "   ⏰ Notification Timestamp: $notificationTimestamp")
         Log.d(TAG, "   📞 Is One-to-One: $isOneToOneCall")
+        Log.d(TAG, "   🎬 Intent Action: ${intent.action}")
+
+        // Handle notification action intents immediately
+        handleNotificationActions()
 
         setupCallTypeDescription()
         binding!!.conversationNameTextView.text = displayName
@@ -277,6 +281,32 @@ class CallNotificationActivity : CallBaseActivity() {
 
     override fun suppressFitsSystemWindows() {
         binding!!.callNotificationLayout.fitsSystemWindows = false
+    }
+
+    private fun handleNotificationActions() {
+        when (intent.action) {
+            "ANSWER_VOICE" -> {
+                Log.d(TAG, "🔊 Handling ANSWER_VOICE action from notification")
+                intent.putExtra(KEY_CALL_VOICE_ONLY, true)
+                proceedToCall()
+                return
+            }
+            "ANSWER_VIDEO" -> {
+                Log.d(TAG, "📹 Handling ANSWER_VIDEO action from notification")
+                intent.putExtra(KEY_CALL_VOICE_ONLY, false)
+                proceedToCall()
+                return
+            }
+            "DECLINE_CALL" -> {
+                Log.d(TAG, "📵 Handling DECLINE_CALL action from notification")
+                hangup()
+                return
+            }
+            else -> {
+                Log.d(TAG, "📱 No special action - showing normal call notification UI")
+                // Continue with normal UI setup
+            }
+        }
     }
 
     companion object {
