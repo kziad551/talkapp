@@ -489,7 +489,7 @@ class PingForegroundService : Service() {
                 putExtra(KEY_NOTIFICATION_TIMESTAMP, notificationTimestamp.toInt())
                 putExtra(KEY_MESSAGE_ID, "call_$callStart")
                 putExtra(KEY_CALL_VOICE_ONLY, false)
-                putExtra(KEY_FROM_NOTIFICATION_START_CALL, false)
+                putExtra(KEY_FROM_NOTIFICATION_START_CALL, true)
                 putExtra(KEY_SWITCH_TO_ROOM, token)
                 
                 // 🔧 CRITICAL FIX: Add participant permissions to prevent "not allowed to talk" error
@@ -502,7 +502,11 @@ class PingForegroundService : Service() {
                 putExtra(KEY_CONVERSATION_NAME, roomName)
                 putExtra(KEY_RECORDING_STATE, 0) // No recording by default
                 
-                putExtra("callType", "incoming")
+                Log.d(TAG, "🔧 Creating incoming call notification intent:")
+                Log.d(TAG, "   📞 FROM_NOTIFICATION_START_CALL: true")
+                Log.d(TAG, "   🎫 Room Token: $token")
+                Log.d(TAG, "   📧 Display Name: $roomName")
+                Log.d(TAG, "   🚩 Call Flag: $callFlag")
             }
             
             val fullScreenPendingIntent = PendingIntent.getActivity(
