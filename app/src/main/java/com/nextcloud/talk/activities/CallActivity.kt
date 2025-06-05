@@ -2268,8 +2268,21 @@ class CallActivity : CallBaseActivity() {
         }
         handleJoinedCallParticipantsChanged(selfParticipant, joined, currentSessionId)
 
+        // Enhanced logic for incoming call transition
         if (othersInCall && currentCallStatus !== CallStatus.IN_CONVERSATION) {
+            Log.d(TAG, "🎯 Transitioning to IN_CONVERSATION state")
+            Log.d(TAG, "   📞 Reason: othersInCall=$othersInCall, currentStatus=$currentCallStatus")
             setCallState(CallStatus.IN_CONVERSATION)
+        } else if (isIncomingCallFromNotification && 
+                   currentCallStatus === CallStatus.JOINED) {
+            // For incoming calls, check if there are any active participants
+            Log.d(TAG, "🎯 Special case: Incoming call from notification analysis")
+            Log.d(TAG, "   📊 Participants: joined=${joined.size}")
+            
+            if (joined.size > 0) {
+                Log.d(TAG, "   ✅ Detected active call, transitioning to IN_CONVERSATION")
+                setCallState(CallStatus.IN_CONVERSATION)
+            }
         }
         removeSessions(left)
     }
@@ -2341,9 +2354,29 @@ class CallActivity : CallBaseActivity() {
             }
         }
         othersInCall = if (selfJoined) {
-            joined.size > 1
+            joined.size > 1  // If I joined, there need to be more than 1 (including me)
         } else {
-            joined.isNotEmpty()
+            joined.isNotEmpty()  // If I haven't joined yet, any participant means others are in call
+        }
+        
+        Log.d(TAG, "🔍 Call participant analysis:")
+        Log.d(TAG, "   👤 Self joined: $selfJoined")
+        Log.d(TAG, "   📊 Total joined: ${joined.size}")
+        Log.d(TAG, "   👥 Others in call: $othersInCall")
+        Log.d(TAG, "   🎯 Current call status: $currentCallStatus")
+        Log.d(TAG, "   📞 From notification: $isIncomingCallFromNotification")
+        
+        // For incoming calls from notifications, we should transition to IN_CONVERSATION 
+        // if we detect any participants (including ourselves) actively in the call
+        if (isIncomingCallFromNotification && currentCallStatus === CallStatus.JOINED) {
+            Log.d(TAG, "   🚨 Incoming call analysis:")
+            Log.d(TAG, "     📊 Total joined participants: ${joined.size}")
+            
+            // If we have any active participants (meaning the call is active), transition to IN_CONVERSATION
+            if (joined.size > 0) {
+                Log.d(TAG, "   ✅ Detected active call with participants, transitioning to IN_CONVERSATION")
+                othersInCall = true  // Force transition for incoming calls
+            }
         }
     }
 

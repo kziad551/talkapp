@@ -704,7 +704,7 @@ class SettingsActivity :
                 intent, 
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-            
+        
             // Build the notification
             val notification = NotificationCompat.Builder(this, "test_channel")
                 .setSmallIcon(R.drawable.ic_notification)
@@ -725,10 +725,10 @@ class SettingsActivity :
             notificationManager.notify(9876, notification)
             
             Log.d(TAG, "Test notification sent successfully!")
-            
-            // Show confirmation toast
-            Toast.makeText(
-                this,
+        
+        // Show confirmation toast
+        Toast.makeText(
+            this,
                 "Test notification sent! Check your notification area.",
                 Toast.LENGTH_LONG
             ).show()
@@ -739,7 +739,7 @@ class SettingsActivity :
                 this,
                 "Error sending test notification: ${e.message}",
                 Toast.LENGTH_LONG
-            ).show()
+        ).show()
         }
     }
 

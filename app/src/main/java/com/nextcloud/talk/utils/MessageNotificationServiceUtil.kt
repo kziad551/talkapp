@@ -69,7 +69,7 @@ object MessageNotificationServiceUtil {
                 
                 // Schedule an alarm to restart the service if it gets killed
                 scheduleServiceRestart(context)
-            } catch (e: Exception) {
+                    } catch (e: Exception) {
                 Log.e(TAG, "❌ Error starting PingForegroundService: ${e.message}", e)
                 Log.e(TAG, "❌ Full stack trace: ${e.stackTrace.joinToString("\n")}")
             }

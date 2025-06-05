@@ -153,7 +153,7 @@ class NotificationPollingService : Service() {
         Log.d(TAG, "Starting polling...")
         startPolling()
     }
-
+        
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand() called with flags=$flags, startId=$startId")
         return START_STICKY // Service should restart if killed
@@ -172,17 +172,17 @@ class NotificationPollingService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
+    
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 val channel = NotificationChannel(
                     NOTIFICATION_CHANNEL_ID,
                     getString(R.string.nc_notification_channel_messages),
-                    NotificationManager.IMPORTANCE_LOW
-                ).apply {
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
                     description = getString(R.string.nc_notification_channel_messages_description)
-                    setShowBadge(false)
+                setShowBadge(false)
                     enableLights(false)
                     enableVibration(false)
                 }
@@ -195,14 +195,14 @@ class NotificationPollingService : Service() {
             }
         }
     }
-
+    
     private fun createForegroundNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
+        
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText("Checking for notifications every ${POLLING_INTERVAL/1000}s")
@@ -212,7 +212,7 @@ class NotificationPollingService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
-
+    
     private fun startPolling() {
         Log.d(TAG, "startPolling() called")
         backgroundHandler?.post(object : Runnable {
@@ -283,7 +283,7 @@ class NotificationPollingService : Service() {
             Log.e(TAG, "Error checking for notifications", e)
         }
     }
-
+    
     private fun processNotifications(responseBody: String) {
         try {
             // For now, just log that we would show a notification
@@ -299,14 +299,14 @@ class NotificationPollingService : Service() {
             Log.e(TAG, "Error processing notifications", e)
         }
     }
-
+    
     private fun showTestNotification(message: String) {
         try {
             if (!hasNotificationPermission()) {
                 Log.w(TAG, "Cannot show notification - no permission")
                 return
             }
-
+            
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             
             val intent = Intent(this, MainActivity::class.java)
@@ -330,11 +330,11 @@ class NotificationPollingService : Service() {
             Log.e(TAG, "Failed to show test notification", e)
         }
     }
-
+    
     private fun hasNotificationPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val result = ContextCompat.checkSelfPermission(
-                this,
+                this, 
                 android.Manifest.permission.POST_NOTIFICATIONS
             ) == PackageManager.PERMISSION_GRANTED
             Log.d(TAG, "Notification permission check (Android 13+): $result")

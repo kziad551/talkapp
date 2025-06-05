@@ -4,37 +4,56 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.BitmapFactory
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.TaskStackBuilder
+import androidx.core.net.toUri
+import autodagger.AutoInjector
 import com.nextcloud.talk.R
 import com.nextcloud.talk.BuildConfig
+import com.nextcloud.talk.application.NextcloudTalkApplication
+import com.nextcloud.talk.callnotification.CallNotificationActivity
 import com.nextcloud.talk.chat.ChatActivity
 import com.nextcloud.talk.conversationlist.ConversationsListActivity
+import com.nextcloud.talk.data.user.model.User
 import com.nextcloud.talk.utils.CredentialsUtil
 import com.nextcloud.talk.utils.NotificationPermissionHelper
 import com.nextcloud.talk.utils.NotificationUtils
+import com.nextcloud.talk.utils.NotificationUtils.getCallRingtoneUri
+import com.nextcloud.talk.utils.database.user.CurrentUserProviderNew
 import com.nextcloud.talk.utils.preferences.AppPreferencesImpl
-import com.nextcloud.talk.callnotification.CallNotificationActivity
 import com.nextcloud.talk.utils.bundle.BundleKeys
+import com.nextcloud.talk.users.UserManager
+import kotlinx.coroutines.*
+import okhttp3.*
+import org.json.JSONObject
+import org.w3c.dom.Element
+import java.io.IOException
 import java.io.StringReader
+import java.net.URL
 import java.util.concurrent.TimeUnit
+import javax.inject.Inject
 import javax.xml.parsers.DocumentBuilderFactory
+import org.xml.sax.InputSource
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.*
-import okhttp3.Credentials
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
-import org.w3c.dom.Element
-import org.xml.sax.InputSource
 
+@AutoInjector(NextcloudTalkApplication::class)
 class PingForegroundService : Service() {
+
+    @Inject
+    lateinit var userManager: UserManager
+
+    @Inject
+    lateinit var currentUserProvider: CurrentUserProviderNew
 
     /* ---------- constants ---------- */
     private val TAG = "PingForegroundService"
@@ -60,9 +79,10 @@ class PingForegroundService : Service() {
     private var  err           = 0
     private val maxBackoff     = 300   // 5 min
     private val ok             = OkHttpClient.Builder()
-                                .connectTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
                                 .readTimeout (30, TimeUnit.SECONDS)
-                                .build()
+        .build()
+    private val handler = Handler()
 
     /* ---------- Android lifecycle ---------- */
     override fun onBind(i: Intent?): IBinder? = null
@@ -70,8 +90,12 @@ class PingForegroundService : Service() {
     override fun onCreate() {
         Log.d(TAG, "🚀 PingForegroundService.onCreate() called")
         super.onCreate()
-        
+
         try {
+            Log.d(TAG, "🔧 Injecting dependencies...")
+            NextcloudTalkApplication.sharedApplication!!.componentApplication.inject(this)
+            Log.d(TAG, "✅ Dependencies injected successfully")
+            
             Log.d(TAG, "🔧 Initializing SharedPreferences...")
             p   = getSharedPreferences(PREFS, MODE_PRIVATE)
             err = p.getInt(KEY_ERRORS, 0)
@@ -82,7 +106,7 @@ class PingForegroundService : Service() {
             Log.d(TAG, "✅ Notification channels created")
             
             Log.d(TAG, "🏃 Starting foreground with persistent notification...")
-            startForeground(
+        startForeground(
                 NOTIF_ID, persistent(),
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0
@@ -90,10 +114,10 @@ class PingForegroundService : Service() {
             Log.d(TAG, "✅ Foreground service started successfully")
 
             Log.d(TAG, "🔐 Checking notification permissions...")
-            if (NotificationPermissionHelper.hasNotificationPermission(this)) {
+        if (NotificationPermissionHelper.hasNotificationPermission(this)) {
                 Log.d(TAG, "✅ Notification permission granted, starting loop")
                 loop()
-            } else {
+        } else {
                 Log.e(TAG, "❌ Notification permission missing, stopping service")
                 stopSelf()
             }
@@ -115,14 +139,14 @@ class PingForegroundService : Service() {
     private fun loop() = scope.launch {
         Log.d(TAG, "🔄 Main polling loop started")
         Log.d(TAG, "🚀 Service started and running - beginning message polling")
-        while (isActive) {
+            while (isActive) {
             val delayS = if (err > 0) min(2.0.pow(err).toInt(), maxBackoff) else 30
             Log.d(TAG, "⏰ Next poll in ${delayS}s (error count: $err)")
             try { 
                 Log.d(TAG, "🔎 Starting poll cycle...")
                 poll() 
                 Log.d(TAG, "✅ Poll cycle completed successfully")
-            } catch (e: Exception) {
+                } catch (e: Exception) {
                 Log.e(TAG, "❌ Poll failed: ${e.message}", e)
                 incrErr()
             }
@@ -162,7 +186,7 @@ class PingForegroundService : Service() {
         Log.d(TAG, "🌐 pollRooms called with server=$server, user=$user")
         val url = "$server$ROOMS_API"
         Log.d(TAG, "🔗 Full API URL: $url")
-        
+
         val req = Request.Builder()
             .url(url).header("Authorization", Credentials.basic(user, pass))
             .header("OCS-APIRequest", "true").build()
@@ -216,8 +240,21 @@ class PingForegroundService : Service() {
                 val callStart = e.text("callStartTime").trim().toLongOrNull() ?: 0L
                 val hasCall   = e.text("hasCall").trim().equals("true", true)
 
-                if ((hasCall || callFlag > 0 || callStart > 0) &&
-                    callMemorised[token] != callStart) {
+                Log.d(TAG, "🔍 Call detection for room '$roomName':")
+                Log.d(TAG, "   🚩 callFlag: $callFlag")
+                Log.d(TAG, "   ⏰ callStart: $callStart")
+                Log.d(TAG, "   📞 hasCall: $hasCall")
+                Log.d(TAG, "   💾 Last call start stored: ${callMemorised[token]}")
+                
+                val isNewCall = (hasCall || callFlag > 0 || callStart > 0) && callMemorised[token] != callStart
+                Log.d(TAG, "   🆕 Is new call? $isNewCall")
+
+                if (isNewCall) {
+                    Log.d(TAG, "🚨 NEW CALL DETECTED!")
+                    Log.d(TAG, "   🏠 Room: '$roomName'")
+                    Log.d(TAG, "   🎫 Token: '$token'")
+                    Log.d(TAG, "   📤 Triggering full-screen call notification...")
+                    
                     showCall(roomName, token, callFlag, callStart)
                     callMemorised[token] = callStart
                     somethingNew = true
@@ -349,7 +386,7 @@ class PingForegroundService : Service() {
                 if (chatChannel != null) {
                     Log.d(TAG, "   📢 Chat channel importance: ${chatChannel.importance}")
                     Log.d(TAG, "   📢 Chat channel enabled: ${chatChannel.importance != NotificationManager.IMPORTANCE_NONE}")
-                } else {
+        } else {
                     Log.e(TAG, "   ❌ Chat channel not found!")
                 }
             }
@@ -358,10 +395,10 @@ class PingForegroundService : Service() {
                 if (token.isBlank()) ConversationsListActivity::class.java else ChatActivity::class.java
             ).apply {
                 if (token.isNotBlank()) putExtra(BundleKeys.KEY_ROOM_TOKEN, token)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
 
-            val pi = TaskStackBuilder.create(this).run {
+        val pi = TaskStackBuilder.create(this).run {
                 addNextIntentWithParentStack(i)
                 getPendingIntent(0, PendingIntent.FLAG_UPDATE_CURRENT or
                     (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0))
@@ -369,16 +406,16 @@ class PingForegroundService : Service() {
 
             // Create individual message notification (child of group)
             val notification = NotificationCompat.Builder(this, CH_CHAT)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setAutoCancel(true)
-                .setContentIntent(pi)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setDefaults(NotificationCompat.DEFAULT_ALL)
                 .setGroup(GROUP_CHAT)           // Add to group
                 .setGroupSummary(false)         // This is a child notification
-                .build()
+            .build()
 
             // Use token.hashCode() as notification ID to update per-room
             val notificationId = token.hashCode()
@@ -400,17 +437,38 @@ class PingForegroundService : Service() {
     }
 
     private fun showCall(roomName: String, token: String, callFlag: Int, callStart: Long) {
+        Log.d(TAG, "🔔 showCall() called - Creating call notification exactly like NotificationWorker")
+        Log.d(TAG, "   🏠 Room: '$roomName'")
+        Log.d(TAG, "   🎫 Token: '$token'")
+        Log.d(TAG, "   🚩 Call Flag: $callFlag")
+        Log.d(TAG, "   ⏰ Call Start: $callStart")
+        
         try {
             val appPreferences = AppPreferencesImpl(this)
-            val intent = Intent(this, CallNotificationActivity::class.java).apply {
-                putExtra(BundleKeys.KEY_ROOM_TOKEN, token)
-                putExtra(BundleKeys.KEY_NOTIFICATION_TIMESTAMP, callStart.toInt())
-                putExtra(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName)
-                putExtra(BundleKeys.KEY_CONVERSATION_NAME, roomName)
-                putExtra(BundleKeys.KEY_CALL_FLAG, callFlag)
-                putExtra(BundleKeys.KEY_ROOM_ONE_TO_ONE, false)
-                putExtra(BundleKeys.KEY_FROM_NOTIFICATION_START_CALL, true)
-                putExtra(BundleKeys.KEY_INTERNAL_USER_ID, -1L)
+            val currentUser = currentUserProvider.currentUser.blockingGet()
+            
+            if (currentUser == null) {
+                Log.e(TAG, "❌ No current user found, cannot show call notification")
+                return
+            }
+            
+            Log.d(TAG, "👤 Current user: ${currentUser.displayName} (ID: ${currentUser.id})")
+            
+            // Create bundle exactly like NotificationWorker.createBundle()
+            val bundle = Bundle().apply {
+                putString(BundleKeys.KEY_ROOM_TOKEN, token)
+                putLong(BundleKeys.KEY_INTERNAL_USER_ID, currentUser.id!!)
+                putString(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName)
+                putString(BundleKeys.KEY_CONVERSATION_NAME, roomName)
+                putBoolean(BundleKeys.KEY_ROOM_ONE_TO_ONE, false) // Assume group call for polling
+                putBoolean(BundleKeys.KEY_FROM_NOTIFICATION_START_CALL, true)
+                putInt(BundleKeys.KEY_NOTIFICATION_TIMESTAMP, System.currentTimeMillis().toInt())
+                putBoolean(BundleKeys.KEY_CALL_VOICE_ONLY, false)
+            }
+            
+            // Create intent for CallNotificationActivity exactly like NotificationWorker
+            val fullScreenIntent = Intent(this, CallNotificationActivity::class.java).apply {
+                putExtras(bundle)
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
@@ -418,35 +476,107 @@ class PingForegroundService : Service() {
             val fullScreenPendingIntent = PendingIntent.getActivity(
                 this,
                 requestCode,
-                intent,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                fullScreenIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                else
+                } else {
                     PendingIntent.FLAG_UPDATE_CURRENT
+                }
             )
 
-            val soundUri = NotificationUtils.getCallRingtoneUri(this, appPreferences)
-            val notification = NotificationCompat.Builder(
-                this,
-                NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name
-            )
+            // Get sound URI like NotificationWorker
+            val soundUri = NotificationUtils.getCallRingtoneUri(applicationContext, appPreferences)
+            val notificationChannelId = NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name
+            val baseUrl = currentUser.baseUrl?.toUri()?.host ?: ""
+
+            // Create notification exactly like NotificationWorker.prepareCallNotificationScreen()
+            val notification = NotificationCompat.Builder(applicationContext, notificationChannelId)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setCategory(Notification.CATEGORY_CALL)
                 .setSmallIcon(R.drawable.ic_call_black_24dp)
-                .setContentTitle(roomName)
+                .setSubText(baseUrl)
+                .setShowWhen(true)
+                .setWhen(System.currentTimeMillis())
+                .setContentTitle(roomName) // Use room name as title like NotificationWorker
+                // auto cancel is set to false because notification (including sound) should continue while
+                // CallNotificationActivity is active
                 .setAutoCancel(false)
                 .setOngoing(true)
                 .setContentIntent(fullScreenPendingIntent)
                 .setFullScreenIntent(fullScreenPendingIntent, true)
                 .setSound(soundUri)
                 .build()
+            
+            // Add FLAG_INSISTENT like NotificationWorker
             notification.flags = notification.flags or Notification.FLAG_INSISTENT
 
-            getSystemService(NotificationManager::class.java)
-                .notify(callStart.toInt(), notification)
+            val nm = getSystemService(NotificationManager::class.java)
+            val notificationId = System.currentTimeMillis().toInt()
+            
+            Log.d(TAG, "📢 Showing call notification with ID: $notificationId")
+            Log.d(TAG, "   🔊 Sound URI: $soundUri")
+            Log.d(TAG, "   📢 Channel: $notificationChannelId")
+            Log.d(TAG, "   🏠 Base URL: $baseUrl")
+            
+            nm.notify(notificationId, notification)
+
+            Log.d(TAG, "✅ Call notification created successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to show call notification", e)
+            Log.e(TAG, "❌ Error creating call notification: ${e.message}", e)
         }
+    }
+    
+    private fun createCallNotificationBundle(roomName: String, token: String, callFlag: Int, currentUser: User): Bundle {
+        val bundle = Bundle()
+        
+        // Add all the necessary extras that CallNotificationActivity expects
+        bundle.putString(BundleKeys.KEY_ROOM_TOKEN, token)
+        bundle.putLong(BundleKeys.KEY_INTERNAL_USER_ID, currentUser.id!!)
+        bundle.putString(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName)
+        bundle.putString(BundleKeys.KEY_CONVERSATION_NAME, roomName)
+        bundle.putInt(BundleKeys.KEY_CALL_FLAG, callFlag)
+        bundle.putBoolean(BundleKeys.KEY_ROOM_ONE_TO_ONE, false) // Assume group call for polling
+        bundle.putInt(BundleKeys.KEY_NOTIFICATION_TIMESTAMP, System.currentTimeMillis().toInt())
+        
+        Log.d(TAG, "📦 Bundle created with:")
+        Log.d(TAG, "   🎫 Room Token: $token")
+        Log.d(TAG, "   👤 User ID: ${currentUser.id}")
+        Log.d(TAG, "   🏷️ Display Name: $roomName")
+        Log.d(TAG, "   🚩 Call Flag: $callFlag")
+        
+        return bundle
+    }
+    
+    private var lastCallNotificationId: Int = 0
+    
+    private fun startCallMonitoring(user: User, roomToken: String, notificationId: Int) {
+        Log.d(TAG, "🕵️ Starting call monitoring for token: $roomToken")
+        
+        // Simple monitoring - remove notification if call ends
+        // This mimics what NotificationWorker.checkIfCallIsActive does
+        handler.postDelayed({
+            try {
+                val nm = getSystemService(NotificationManager::class.java)
+                val activeNotifications = nm.activeNotifications
+                var isStillActive = false
+                
+                for (notification in activeNotifications) {
+                    if (notification.id == notificationId) {
+                        isStillActive = true
+                        break
+                    }
+                }
+                
+                if (isStillActive) {
+                    Log.d(TAG, "📞 Call notification still active, continuing monitoring")
+                    startCallMonitoring(user, roomToken, notificationId) // Continue monitoring
+                } else {
+                    Log.d(TAG, "📞 Call notification was dismissed or handled")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Error in call monitoring: ${e.message}", e)
+            }
+        }, 5000) // Check every 5 seconds
     }
 
     private fun createGroupSummaryNotification(nm: NotificationManager) {
@@ -497,8 +627,32 @@ class PingForegroundService : Service() {
                 setShowBadge(false)
             }
             
-        nm.createNotificationChannels(listOf(serviceChannel, chatChannel))
-        Log.d(TAG, "📢 Notification channels created: $CH_PING (LOW), $CH_CHAT (HIGH with DND bypass)")
+        // Create the calls notification channel that NotificationWorker uses
+        val callsChannel = NotificationChannel(
+            NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name,
+            "Call notifications",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Incoming call notifications"
+            enableLights(true)
+            enableVibration(true)
+            setBypassDnd(true)  // Break through Do Not Disturb
+            setShowBadge(true)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            // For calls, we want maximum importance
+            importance = NotificationManager.IMPORTANCE_HIGH
+            // Enable sound
+            setSound(
+                android.provider.Settings.System.DEFAULT_RINGTONE_URI,
+                android.media.AudioAttributes.Builder()
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .build()
+            )
+        }
+            
+        nm.createNotificationChannels(listOf(serviceChannel, chatChannel, callsChannel))
+        Log.d(TAG, "📢 Notification channels created: $CH_PING (LOW), $CH_CHAT (HIGH), ${NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name} (HIGH) - all with DND bypass")
     }
 
     /* ---------- SharedPreferences helpers ---------- */
@@ -620,6 +774,51 @@ class PingForegroundService : Service() {
             } catch (e: Exception) {
                 Log.e("PingForegroundService", "❌ Failed to start service: ${e.message}", e)
             }
+        }
+    }
+
+    private fun showFullScreenPermissionGuidance() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
+        
+        Log.d(TAG, "📖 Showing full-screen permission guidance for Android 14+")
+        
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            
+            // Create intent to open the full-screen intent settings
+            val settingsIntent = Intent().apply {
+                action = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
+                data = android.net.Uri.fromParts("package", packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            
+            val settingsPendingIntent = PendingIntent.getActivity(
+                this,
+                9998,
+                settingsIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            
+            val guidanceNotification = NotificationCompat.Builder(this, CH_CHAT)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Enable Full-Screen Calls")
+                .setContentText("Tap to allow full-screen incoming calls")
+                .setStyle(NotificationCompat.BigTextStyle()
+                    .bigText("To see incoming calls as full-screen alerts (like phone calls), please enable the 'Display over other apps' permission for Talk. Tap this notification to open settings."))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(settingsPendingIntent)
+                .addAction(R.drawable.ic_settings, "Open Settings", settingsPendingIntent)
+                .build()
+            
+            nm.notify(9998, guidanceNotification)
+            Log.d(TAG, "✅ Full-screen permission guidance notification shown")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error showing full-screen permission guidance: ${e.message}", e)
         }
     }
 }
