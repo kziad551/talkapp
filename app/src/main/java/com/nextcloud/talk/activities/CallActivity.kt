@@ -2071,14 +2071,23 @@ class CallActivity : CallBaseActivity() {
 
     private fun hangup(shutDownView: Boolean, endCallForAll: Boolean) {
         Log.d(TAG, "🔚 hangup() called - shutDownView: $shutDownView, endCallForAll: $endCallForAll")
+        Log.d(TAG, "🔚 CALL HANGUP TRIGGERED - Starting aggressive notification cleanup")
         
-        // 🔧 PERSISTENT RINGING FIX: Ensure all call notifications are canceled when hanging up
+        // 🔧 PERSISTENT RINGING FIX: Enhanced notification cleanup
         try {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             
-            // Cancel all active call notifications to stop persistent ringing
+            Log.d(TAG, "🔕 HANGUP CLEANUP: Starting comprehensive notification cleanup")
+            Log.d(TAG, "🔕 Room token: $roomToken")
+            
+            // 1. IMMEDIATE: Cancel the problematic group summary notification that causes persistent ringing
+            Log.d(TAG, "🚨 PRIORITY: Canceling group summary notification 999999 (persistent ringing source)")
+            notificationManager.cancel(999999)
+            notificationManager.cancel("group_chat_messages", 999999)
+            
+            // 2. Cancel all active call notifications to stop persistent ringing
             if (!TextUtils.isEmpty(roomToken)) {
-                Log.d(TAG, "🔕 Canceling all call notifications for room: $roomToken")
+                Log.d(TAG, "🔕 Canceling room-specific notifications for: $roomToken")
                 
                 // Cancel notifications by room token (for NotificationWorker style notifications)
                 NotificationUtils.cancelExistingNotificationsForRoom(
@@ -2087,19 +2096,65 @@ class CallActivity : CallBaseActivity() {
                     roomToken!!
                 )
                 
-                // Also cancel any lingering call notifications from PingForegroundService
-                // These use timestamp-based IDs, so we need a broader approach
-                try {
-                    // Cancel recent notifications that might be call-related (last 60 seconds)
-                    val currentTime = System.currentTimeMillis()
-                    for (i in 0..60) {
-                        val notificationId = (currentTime - (i * 1000)).toInt()
-                        notificationManager.cancel(notificationId)
+                // 3. NUCLEAR APPROACH: Cancel ALL Talk-related notifications
+                Log.d(TAG, "🔕 NUCLEAR CLEANUP: Canceling ALL active Talk notifications")
+                val activeNotifications = notificationManager.activeNotifications
+                Log.d(TAG, "🔕 Found ${activeNotifications.size} active notifications before cleanup")
+                
+                for (notification in activeNotifications) {
+                    if (notification.packageName == packageName) {
+                        Log.d(TAG, "🔕 NUCLEAR: Canceling Talk notification: ID=${notification.id}, tag=${notification.tag}")
+                        try {
+                            notificationManager.cancel(notification.tag, notification.id)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "⚠️ Failed to cancel notification ${notification.id}: ${e.message}")
+                        }
                     }
-                    Log.d(TAG, "🔕 Attempted to cancel recent timestamp-based call notifications")
-                } catch (e: Exception) {
-                    Log.w(TAG, "⚠️ Error canceling timestamp-based notifications: ${e.message}")
                 }
+                
+                // 4. Cancel timestamp-based call notifications (PingForegroundService style)
+                val currentTime = System.currentTimeMillis()
+                Log.d(TAG, "🔕 Canceling timestamp-based notifications (last 2 minutes)")
+                for (i in 0..120) { // Last 2 minutes
+                    val notificationId = (currentTime - (i * 1000)).toInt()
+                    try {
+                        notificationManager.cancel(notificationId)
+                    } catch (e: Exception) {
+                        // Silent - many IDs won't exist
+                    }
+                }
+                
+                // 5. SPECIFIC: Cancel known problematic notification IDs
+                val problematicIds = listOf(
+                    999999, // Group summary - main culprit
+                    1, // Service notification
+                    System.currentTimeMillis().toInt(), // Current timestamp
+                    1072830063, // From logs
+                    1072860387  // From logs
+                )
+                Log.d(TAG, "🔕 Canceling known problematic notification IDs: $problematicIds")
+                for (id in problematicIds) {
+                    try {
+                        notificationManager.cancel(id)
+                        notificationManager.cancel("group_chat_messages", id)
+                        Log.d(TAG, "🔕 Canceled notification ID: $id")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "⚠️ Failed to cancel ID $id: ${e.message}")
+                    }
+                }
+                
+                // 6. POST-CLEANUP VERIFICATION
+                val remainingNotifications = notificationManager.activeNotifications
+                Log.d(TAG, "🔕 Remaining notifications after cleanup: ${remainingNotifications.size}")
+                for (notification in remainingNotifications) {
+                    if (notification.packageName == packageName) {
+                        Log.w(TAG, "⚠️ STILL ACTIVE: ID=${notification.id}, tag=${notification.tag}")
+                    }
+                }
+                
+                Log.d(TAG, "🔕 HANGUP CLEANUP: Comprehensive cleanup completed")
+            } else {
+                Log.w(TAG, "⚠️ No room token available for notification cleanup")
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error during notification cleanup: ${e.message}", e)

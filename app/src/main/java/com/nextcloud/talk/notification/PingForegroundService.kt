@@ -15,6 +15,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.TaskStackBuilder
 import androidx.core.net.toUri
 import autodagger.AutoInjector
@@ -176,6 +177,36 @@ class PingForegroundService : Service() {
     private suspend fun poll() {
         Log.d(TAG, "🔍 poll() called - determining credentials...")
         
+        // 🔧 EMERGENCY CLEANUP: Check for lingering notifications at each poll
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val activeNotifications = notificationManager.activeNotifications
+            var talkNotificationsCount = 0
+            
+            for (notification in activeNotifications) {
+                if (notification.packageName == packageName) {
+                    talkNotificationsCount++
+                    // If we find the problematic group summary notification, log it
+                    if (notification.id == 999999) {
+                        Log.w(TAG, "⚠️ EMERGENCY: Found persistent group summary notification 999999 - will clean up")
+                        
+                        // Emergency cleanup if too many notifications are active
+                        if (talkNotificationsCount > 3) {
+                            Log.w(TAG, "🚨 EMERGENCY CLEANUP: Found $talkNotificationsCount Talk notifications - cleaning up")
+                            notificationManager.cancel(999999)
+                            notificationManager.cancel("group_chat_messages", 999999)
+                        }
+                    }
+                }
+            }
+            
+            if (talkNotificationsCount > 0) {
+                Log.d(TAG, "📊 Currently active Talk notifications: $talkNotificationsCount")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "⚠️ Error during emergency notification check: ${e.message}")
+        }
+        
         // Check if we have saved credentials
         if (!CredentialsUtil.hasCredentials(this)) {
             Log.w(TAG, "⚠️ No credentials found - user needs to log in first")
@@ -279,31 +310,52 @@ class PingForegroundService : Service() {
                     somethingNew = true
                 } else if (!hasCall && callFlag == 0 && callStart == 0L && callMemorised.containsKey(token)) {
                     // 🔧 PERSISTENT RINGING FIX: Cancel any existing call notifications if call ended
-                    Log.d(TAG, "🔕 Call ended for room '$roomName' - canceling any lingering call notifications")
+                    Log.d(TAG, "🔕 Call ended for room: '$roomName' (token: $token)")
+                    Log.d(TAG, "🔕 AGGRESSIVE CLEANUP: Removing all call-related notifications")
+                    
+                    // Cancel specific call notification for this room
+                    val currentUser = currentUserProvider.currentUser.blockingGet()
+                    NotificationUtils.cancelExistingNotificationsForRoom(applicationContext, currentUser, token)
+                    
+                    // AGGRESSIVE: Cancel all possible call notification IDs for this call
+                    val callStartTime = callMemorised[token] ?: 0L
+                    if (callStartTime > 0) {
+                        Log.d(TAG, "🔕 Canceling notifications based on call start time: $callStartTime")
+                        // Cancel notifications created around the call start time (±2 minutes)
+                        for (offset in -120..120) {
+                            val notificationId = (callStartTime + (offset * 1000)).toInt()
+                            try {
+                                NotificationManagerCompat.from(applicationContext).cancel(notificationId)
+                            } catch (e: Exception) {
+                                // Silently continue - some IDs might not exist
+                            }
+                        }
+                    }
+                    
+                    // NUCLEAR OPTION: Cancel ALL active Talk notifications to ensure cleanup
                     try {
-                        val currentUser = currentUserProvider.currentUser.blockingGet()
-                        NotificationUtils.cancelExistingNotificationsForRoom(
-                            applicationContext,
-                            currentUser,
-                            token
-                        )
+                        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        val activeNotifications = notificationManager.activeNotifications
+                        Log.d(TAG, "🔕 NUCLEAR CLEANUP: Found ${activeNotifications.size} active notifications")
                         
-                        // Also cancel notifications using timestamp-based IDs (PingForegroundService style)
-                        val nm = getSystemService(NotificationManager::class.java)
-                        val lastCallStart = callMemorised[token] ?: 0L
-                        if (lastCallStart > 0L) {
-                            val callNotificationId = lastCallStart.toInt()
-                            nm.cancel(callNotificationId)
-                            Log.d(TAG, "🔕 Canceled timestamp-based call notification ID: $callNotificationId")
+                        for (notification in activeNotifications) {
+                            if (notification.packageName == packageName) {
+                                Log.d(TAG, "🔕 NUCLEAR: Canceling notification ID=${notification.id}, tag=${notification.tag}")
+                                notificationManager.cancel(notification.tag, notification.id)
+                            }
                         }
                         
-                        // Remove from memory since call ended
-                        callMemorised.remove(token)
-                        somethingNew = true
-                        Log.d(TAG, "✅ Call cleanup completed for room '$roomName'")
+                        // Also cancel group summary
+                        notificationManager.cancel("group_chat_messages", 999999)
+                        notificationManager.cancel(999999)
+                        
                     } catch (e: Exception) {
-                        Log.w(TAG, "⚠️ Error during call notification cleanup: ${e.message}")
+                        Log.w(TAG, "⚠️ Error during nuclear cleanup: ${e.message}")
                     }
+                    
+                    callMemorised.remove(token)
+                    somethingNew = true
+                    Log.d(TAG, "🔕 Call cleanup completed for room: $roomName")
                 }
                 
                 Log.d(TAG, "🏠 Room #$i: token='$token', name='$roomName', unreadMessages=$unread")
@@ -363,6 +415,26 @@ class PingForegroundService : Service() {
                     Log.d(TAG, "   ⏭️ Updating message ID and continuing...")
                     
                     // Still update the message ID to mark it as seen
+                    memorised[token] = msgId
+                    somethingNew = true
+                    continue
+                }
+
+                // 🔧 CALL-RELATED MESSAGE FILTER: Skip notifications for call system messages
+                val messageText = msgTxt.lowercase()
+                val isCallRelatedMessage = messageText.contains("ended the call") || 
+                                         messageText.contains("call ended") ||
+                                         messageText.contains("duration") ||
+                                         messageText.contains("unanswered call") ||
+                                         messageText.contains("missed call") ||
+                                         messageText.contains("call with") ||
+                                         messageText.contains("{actor} ended") ||
+                                         messageText.contains("{user1}")
+                
+                if (isCallRelatedMessage) {
+                    Log.d(TAG, "🔇 FILTERED: Skipping call-related system message notification")
+                    Log.d(TAG, "   💬 Message: '$msgTxt'")
+                    Log.d(TAG, "   📝 Reason: Call system messages should not vibrate/sound")
                     memorised[token] = msgId
                     somethingNew = true
                     continue
@@ -680,7 +752,55 @@ class PingForegroundService : Service() {
             .build()
 
         nm.notify(SUMMARY_ID, summaryNotification)
-        Log.d(TAG, "✅ Group summary notification posted with ID $SUMMARY_ID")
+        Log.d(TAG, "✅ Group summary notification posted with ID 999999")
+        Log.d(TAG, "✅ Notification triggered and message ID saved")
+        
+        // 🔧 PREVENTIVE CLEANUP: Schedule cleanup to prevent group summary from becoming persistently noisy
+        handler.postDelayed({
+            try {
+                Log.d(TAG, "🧹 PREVENTIVE: Running cleanup 3 seconds after notification creation")
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                val activeNotifications = notificationManager.activeNotifications
+                
+                var groupSummaryCount = 0
+                var totalTalkNotifications = 0
+                
+                for (notification in activeNotifications) {
+                    if (notification.packageName == packageName) {
+                        totalTalkNotifications++
+                        if (notification.id == 999999) {
+                            groupSummaryCount++
+                        }
+                    }
+                }
+                
+                Log.d(TAG, "🧹 PREVENTIVE: Found $totalTalkNotifications total Talk notifications, $groupSummaryCount group summaries")
+                
+                // If we have too many notifications or multiple group summaries, clean them up
+                if (groupSummaryCount > 1 || totalTalkNotifications > 5) {
+                    Log.w(TAG, "⚠️ PREVENTIVE: Excessive notifications detected - cleaning up")
+                    notificationManager.cancel(999999)
+                    notificationManager.cancel("group_chat_messages", 999999)
+                    
+                    // Also clean up any very old individual notifications
+                    for (notification in activeNotifications) {
+                        if (notification.packageName == packageName && notification.id != 999999 && notification.id != 1) {
+                            val age = System.currentTimeMillis() - notification.postTime
+                            if (age > 300000) { // 5 minutes old
+                                Log.d(TAG, "🧹 PREVENTIVE: Cleaning old notification ID ${notification.id}")
+                                notificationManager.cancel(notification.id)
+                            }
+                        }
+                    }
+                } else {
+                    Log.d(TAG, "🧹 PREVENTIVE: Notification levels normal, no cleanup needed")
+                }
+                
+                Log.d(TAG, "🧹 PREVENTIVE: Cleanup completed")
+            } catch (e: Exception) {
+                Log.w(TAG, "⚠️ Error during preventive cleanup: ${e.message}")
+            }
+        }, 3000) // 3 second delay
     }
 
     private fun persistent() = NotificationCompat.Builder(this, CH_PING)
