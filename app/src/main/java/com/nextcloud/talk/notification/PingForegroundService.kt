@@ -7,11 +7,13 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.BitmapFactory
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
 import androidx.core.app.TaskStackBuilder
 import androidx.core.net.toUri
@@ -45,6 +47,23 @@ import org.xml.sax.InputSource
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.time.Duration.Companion.seconds
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_CALL_FLAG
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_CALL_VOICE_ONLY
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_CONVERSATION_NAME
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_CONVERSATION_PASSWORD
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_FROM_NOTIFICATION_START_CALL
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_INTERNAL_USER_ID
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_IS_MODERATOR
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_MESSAGE_ID
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_MODIFIED_BASE_URL
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_NOTIFICATION_TIMESTAMP
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_PARTICIPANT_PERMISSION_CAN_PUBLISH_AUDIO
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_PARTICIPANT_PERMISSION_CAN_PUBLISH_VIDEO
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_RECORDING_STATE
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_ROOM_ONE_TO_ONE
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_ROOM_TOKEN
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_SWITCH_TO_ROOM
+import com.nextcloud.talk.utils.bundle.BundleKeys.KEY_CONVERSATION_DISPLAY_NAME
 
 @AutoInjector(NextcloudTalkApplication::class)
 class PingForegroundService : Service() {
@@ -452,131 +471,149 @@ class PingForegroundService : Service() {
                 return
             }
             
-            Log.d(TAG, "👤 Current user: ${currentUser.displayName} (ID: ${currentUser.id})")
-            
-            // Create bundle exactly like NotificationWorker.createBundle()
-            val bundle = Bundle().apply {
-                putString(BundleKeys.KEY_ROOM_TOKEN, token)
-                putLong(BundleKeys.KEY_INTERNAL_USER_ID, currentUser.id!!)
-                putString(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName)
-                putString(BundleKeys.KEY_CONVERSATION_NAME, roomName)
-                putBoolean(BundleKeys.KEY_ROOM_ONE_TO_ONE, false) // Assume group call for polling
-                putBoolean(BundleKeys.KEY_FROM_NOTIFICATION_START_CALL, true)
-                putInt(BundleKeys.KEY_NOTIFICATION_TIMESTAMP, System.currentTimeMillis().toInt())
-                putBoolean(BundleKeys.KEY_CALL_VOICE_ONLY, false)
+            // Check Android 14+ full-screen intent permission
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                checkAndRequestFullScreenIntentPermission()
             }
             
-            // Create intent for CallNotificationActivity exactly like NotificationWorker
+            val notificationTimestamp = System.currentTimeMillis()
+            
+            // Create intent for CallNotificationActivity
             val fullScreenIntent = Intent(this, CallNotificationActivity::class.java).apply {
-                putExtras(bundle)
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK or 
+                       Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NO_USER_ACTION
+                putExtra(KEY_INTERNAL_USER_ID, currentUser.id)
+                putExtra(KEY_ROOM_TOKEN, token)  
+                putExtra(KEY_CONVERSATION_DISPLAY_NAME, roomName)
+                putExtra(KEY_CALL_FLAG, callFlag)
+                putExtra(KEY_NOTIFICATION_TIMESTAMP, notificationTimestamp.toInt())
+                putExtra(KEY_MESSAGE_ID, "call_$callStart")
+                putExtra(KEY_CALL_VOICE_ONLY, false)
+                putExtra(KEY_FROM_NOTIFICATION_START_CALL, false)
+                putExtra(KEY_SWITCH_TO_ROOM, token)
+                
+                // 🔧 CRITICAL FIX: Add participant permissions to prevent "not allowed to talk" error
+                putExtra(KEY_PARTICIPANT_PERMISSION_CAN_PUBLISH_AUDIO, true)
+                putExtra(KEY_PARTICIPANT_PERMISSION_CAN_PUBLISH_VIDEO, true) 
+                putExtra(KEY_IS_MODERATOR, false) // Default to false, can be enhanced later
+                putExtra(KEY_ROOM_ONE_TO_ONE, false) // Default for group calls
+                putExtra(KEY_CONVERSATION_PASSWORD, "") // Empty for now
+                putExtra(KEY_MODIFIED_BASE_URL, currentUser.baseUrl ?: "")
+                putExtra(KEY_CONVERSATION_NAME, roomName)
+                putExtra(KEY_RECORDING_STATE, 0) // No recording by default
+                
+                putExtra("callType", "incoming")
             }
-
-            val requestCode = System.currentTimeMillis().toInt()
+            
             val fullScreenPendingIntent = PendingIntent.getActivity(
                 this,
-                requestCode,
+                notificationTimestamp.toInt(),
                 fullScreenIntent,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                } else {
+                else
                     PendingIntent.FLAG_UPDATE_CURRENT
-                }
             )
-
-            // Get sound URI like NotificationWorker
-            val soundUri = NotificationUtils.getCallRingtoneUri(applicationContext, appPreferences)
+            
+            // Create call notification
+            val soundUri = NotificationUtils.getCallRingtoneUri(this, appPreferences)
             val notificationChannelId = NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_CALLS_V4.name
-            val baseUrl = currentUser.baseUrl?.toUri()?.host ?: ""
-
-            // Create notification exactly like NotificationWorker.prepareCallNotificationScreen()
-            val notification = NotificationCompat.Builder(applicationContext, notificationChannelId)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(Notification.CATEGORY_CALL)
-                .setSmallIcon(R.drawable.ic_call_black_24dp)
-                .setSubText(baseUrl)
-                .setShowWhen(true)
-                .setWhen(System.currentTimeMillis())
-                .setContentTitle(roomName) // Use room name as title like NotificationWorker
-                // auto cancel is set to false because notification (including sound) should continue while
-                // CallNotificationActivity is active
-                .setAutoCancel(false)
+            val notification = NotificationCompat.Builder(this, notificationChannelId)
+                .setSmallIcon(R.drawable.ic_call_white_24dp)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setContentTitle(roomName)
+                .setContentText("Incoming call...")
                 .setOngoing(true)
-                .setContentIntent(fullScreenPendingIntent)
+                .setAutoCancel(false)
+                .setDefaults(0) // No default sound/vibration, we set custom
+                .setSound(soundUri, AudioManager.STREAM_RING)
+                .setVibrate(longArrayOf(0, 1000, 1000, 1000))
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setFullScreenIntent(fullScreenPendingIntent, true)
-                .setSound(soundUri)
+                .setContentIntent(fullScreenPendingIntent)
                 .build()
             
-            // Add FLAG_INSISTENT like NotificationWorker
+            // Apply FLAG_INSISTENT for continuous ringing
             notification.flags = notification.flags or Notification.FLAG_INSISTENT
-
-            val nm = getSystemService(NotificationManager::class.java)
-            val notificationId = System.currentTimeMillis().toInt()
             
-            Log.d(TAG, "📢 Showing call notification with ID: $notificationId")
+            Log.d(TAG, "📢 Showing call notification with ID: $notificationTimestamp")
             Log.d(TAG, "   🔊 Sound URI: $soundUri")
-            Log.d(TAG, "   📢 Channel: $notificationChannelId")
-            Log.d(TAG, "   🏠 Base URL: $baseUrl")
+            Log.d(TAG, "   📳 Vibration: ON")
+            Log.d(TAG, "   🚨 FLAG_INSISTENT: ON")
+            Log.d(TAG, "   📱 Full-screen intent: YES")
             
-            nm.notify(notificationId, notification)
-
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(notificationTimestamp.toInt(), notification)
+            
             Log.d(TAG, "✅ Call notification created successfully")
+            
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Error creating call notification: ${e.message}", e)
+            Log.e(TAG, "❌ Error creating call notification", e)
         }
     }
     
-    private fun createCallNotificationBundle(roomName: String, token: String, callFlag: Int, currentUser: User): Bundle {
-        val bundle = Bundle()
-        
-        // Add all the necessary extras that CallNotificationActivity expects
-        bundle.putString(BundleKeys.KEY_ROOM_TOKEN, token)
-        bundle.putLong(BundleKeys.KEY_INTERNAL_USER_ID, currentUser.id!!)
-        bundle.putString(BundleKeys.KEY_CONVERSATION_DISPLAY_NAME, roomName)
-        bundle.putString(BundleKeys.KEY_CONVERSATION_NAME, roomName)
-        bundle.putInt(BundleKeys.KEY_CALL_FLAG, callFlag)
-        bundle.putBoolean(BundleKeys.KEY_ROOM_ONE_TO_ONE, false) // Assume group call for polling
-        bundle.putInt(BundleKeys.KEY_NOTIFICATION_TIMESTAMP, System.currentTimeMillis().toInt())
-        
-        Log.d(TAG, "📦 Bundle created with:")
-        Log.d(TAG, "   🎫 Room Token: $token")
-        Log.d(TAG, "   👤 User ID: ${currentUser.id}")
-        Log.d(TAG, "   🏷️ Display Name: $roomName")
-        Log.d(TAG, "   🚩 Call Flag: $callFlag")
-        
-        return bundle
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    private fun checkAndRequestFullScreenIntentPermission() {
+        try {
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            
+            if (!notificationManager.canUseFullScreenIntent()) {
+                Log.w(TAG, "⚠️ Full-screen intent permission not granted on Android 14+")
+                showFullScreenPermissionGuidance()
+            } else {
+                Log.d(TAG, "✅ Full-screen intent permission is granted")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error checking full-screen intent permission: ${e.message}", e)
+        }
     }
     
-    private var lastCallNotificationId: Int = 0
-    
-    private fun startCallMonitoring(user: User, roomToken: String, notificationId: Int) {
-        Log.d(TAG, "🕵️ Starting call monitoring for token: $roomToken")
-        
-        // Simple monitoring - remove notification if call ends
-        // This mimics what NotificationWorker.checkIfCallIsActive does
-        handler.postDelayed({
-            try {
-                val nm = getSystemService(NotificationManager::class.java)
-                val activeNotifications = nm.activeNotifications
-                var isStillActive = false
-                
-                for (notification in activeNotifications) {
-                    if (notification.id == notificationId) {
-                        isStillActive = true
-                        break
-                    }
-                }
-                
-                if (isStillActive) {
-                    Log.d(TAG, "📞 Call notification still active, continuing monitoring")
-                    startCallMonitoring(user, roomToken, notificationId) // Continue monitoring
+    private fun showFullScreenPermissionGuidance() {
+        try {
+            Log.d(TAG, "📖 Showing full-screen permission guidance for Android 14+")
+            
+            // Create intent to open the full-screen intent settings
+            val settingsIntent = Intent().apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    action = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
+                    data = android.net.Uri.fromParts("package", packageName, null)
                 } else {
-                    Log.d(TAG, "📞 Call notification was dismissed or handled")
+                    action = android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                    data = android.net.Uri.fromParts("package", packageName, null)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error in call monitoring: ${e.message}", e)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-        }, 5000) // Check every 5 seconds
+            
+            val settingsPendingIntent = PendingIntent.getActivity(
+                this,
+                9998,
+                settingsIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                else
+                    PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            
+            val guidanceNotification = NotificationCompat.Builder(this, NotificationUtils.NotificationChannels.NOTIFICATION_CHANNEL_MESSAGES_V4.name)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Enable Full-Screen Calls")
+                .setContentText("Tap to allow full-screen incoming calls")
+                .setStyle(NotificationCompat.BigTextStyle()
+                    .bigText("To see incoming calls as full-screen alerts when your phone is unlocked, please enable the 'Display over other apps' permission for Talk. Tap this notification to open settings."))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(settingsPendingIntent)
+                .addAction(R.drawable.ic_settings, "Open Settings", settingsPendingIntent)
+                .build()
+            
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(9998, guidanceNotification)
+            Log.d(TAG, "✅ Full-screen permission guidance notification shown")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error showing full-screen permission guidance: ${e.message}", e)
+        }
     }
 
     private fun createGroupSummaryNotification(nm: NotificationManager) {
@@ -774,51 +811,6 @@ class PingForegroundService : Service() {
             } catch (e: Exception) {
                 Log.e("PingForegroundService", "❌ Failed to start service: ${e.message}", e)
             }
-        }
-    }
-
-    private fun showFullScreenPermissionGuidance() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) return
-        
-        Log.d(TAG, "📖 Showing full-screen permission guidance for Android 14+")
-        
-        try {
-            val nm = getSystemService(NotificationManager::class.java)
-            
-            // Create intent to open the full-screen intent settings
-            val settingsIntent = Intent().apply {
-                action = "android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT"
-                data = android.net.Uri.fromParts("package", packageName, null)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            
-            val settingsPendingIntent = PendingIntent.getActivity(
-                this,
-                9998,
-                settingsIntent,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                else
-                    PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            
-            val guidanceNotification = NotificationCompat.Builder(this, CH_CHAT)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Enable Full-Screen Calls")
-                .setContentText("Tap to allow full-screen incoming calls")
-                .setStyle(NotificationCompat.BigTextStyle()
-                    .bigText("To see incoming calls as full-screen alerts (like phone calls), please enable the 'Display over other apps' permission for Talk. Tap this notification to open settings."))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true)
-                .setContentIntent(settingsPendingIntent)
-                .addAction(R.drawable.ic_settings, "Open Settings", settingsPendingIntent)
-                .build()
-            
-            nm.notify(9998, guidanceNotification)
-            Log.d(TAG, "✅ Full-screen permission guidance notification shown")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Error showing full-screen permission guidance: ${e.message}", e)
         }
     }
 }

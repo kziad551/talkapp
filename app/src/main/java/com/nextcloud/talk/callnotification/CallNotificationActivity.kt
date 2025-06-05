@@ -159,44 +159,12 @@ class CallNotificationActivity : CallBaseActivity() {
     }
 
     private fun setupNotificationCanceledRoutine() {
-        Log.d(TAG, "🔔 Setting up notification monitoring routine")
-        
         val notificationHandler = Handler(Looper.getMainLooper())
-        var checkCount = 0
-        val maxChecks = 120 // Maximum 2 minutes (120 * 1 second)
-        
         notificationHandler.post(object : Runnable {
             override fun run() {
-                checkCount++
-                
-                // Don't finish if we're already leaving the screen
-                if (leavingScreen) {
-                    Log.d(TAG, "🚪 Already leaving screen, stopping notification checks")
-                    return
-                }
-                
-                val isNotificationVisible = NotificationUtils.isNotificationVisible(context, notificationTimestamp!!.toInt())
-                Log.v(TAG, "🔍 Notification check #$checkCount: visible=$isNotificationVisible")
-                
-                // Only finish if:
-                // 1. Notification is not visible AND
-                // 2. We've checked multiple times (give it a grace period) AND
-                // 3. We haven't exceeded maximum check time
-                if (!isNotificationVisible) {
-                    if (checkCount >= 10) { // Give 10 seconds grace period
-                        Log.d(TAG, "🔔 Notification not visible after grace period, finishing activity")
-                        finish()
-                        return
-                    } else {
-                        Log.d(TAG, "🔔 Notification not visible but still in grace period ($checkCount/10)")
-                    }
-                }
-                
-                // Continue checking if we haven't exceeded max time
-                if (checkCount < maxChecks) {
+                if (NotificationUtils.isNotificationVisible(context, notificationTimestamp!!.toInt())) {
                     notificationHandler.postDelayed(this, ONE_SECOND)
                 } else {
-                    Log.d(TAG, "🔔 Maximum check time reached, finishing activity")
                     finish()
                 }
             }
@@ -248,62 +216,37 @@ class CallNotificationActivity : CallBaseActivity() {
         val callIntent = Intent(this, CallActivity::class.java)
         
         // Copy all original intent extras to ensure complete data transfer
-        intent.extras?.let { originalExtras ->
-            callIntent.putExtras(originalExtras)
-        }
-        
-        // Ensure essential flags are set
-        callIntent.putExtra(KEY_ROOM_ONE_TO_ONE, isOneToOneCall)
-        callIntent.putExtra(KEY_FROM_NOTIFICATION_START_CALL, true)
-        
-        // Add proper call activity flags for better transition
-        callIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        intent.putExtra(KEY_ROOM_ONE_TO_ONE, isOneToOneCall)
+        callIntent.putExtras(intent.extras!!)
         
         Log.d(TAG, "Starting CallActivity with:")
         Log.d(TAG, "  🎫 Room Token: $roomToken")
         Log.d(TAG, "  📧 Display Name: $displayName")
         Log.d(TAG, "  🚩 Call Flag: $callFlag")
         Log.d(TAG, "  👤 User ID: $internalUserId")
-        Log.d(TAG, "  🔊 Voice Only: ${callIntent.getBooleanExtra(KEY_CALL_VOICE_ONLY, false)}")
+        Log.d(TAG, "  🔊 Voice Only: ${intent.getBooleanExtra(KEY_CALL_VOICE_ONLY, false)}")
         
-        try {
-            startActivity(callIntent)
-            Log.d(TAG, "✅ CallActivity launched successfully")
-            
-            // Important: Finish this activity to prevent UI conflicts
-            Log.d(TAG, "🏁 Finishing CallNotificationActivity")
-            finish()
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to start CallActivity: ${e.message}", e)
-        }
+        startActivity(callIntent)
+        Log.d(TAG, "✅ CallActivity launched successfully")
     }
 
     private fun isInCallWithVideo(callFlag: Int): Boolean = (callFlag and Participant.InCallFlags.WITH_VIDEO) > 0
 
     override fun onResume() {
         super.onResume()
-        Log.d(TAG, "▶️ CallNotificationActivity onResume() called")
     }
 
     override fun onPause() {
         super.onPause()
-        Log.d(TAG, "⏸️ CallNotificationActivity onPause() called")
     }
 
     override fun onStop() {
-        Log.d(TAG, "⏹️ CallNotificationActivity onStop() called")
-        
         val notificationManager = NotificationManagerCompat.from(context)
         notificationManager.cancel(notificationTimestamp!!)
-        Log.d(TAG, "🔕 Canceled notification with timestamp: $notificationTimestamp")
-        
         super.onStop()
     }
 
     public override fun onDestroy() {
-        Log.d(TAG, "💀 CallNotificationActivity onDestroy() called")
-        
         leavingScreen = true
         if (handler != null) {
             handler!!.removeCallbacksAndMessages(null)
