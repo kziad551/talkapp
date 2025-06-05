@@ -436,9 +436,16 @@ class PingForegroundService : Service() {
                 .setGroupSummary(false)         // This is a child notification
             .build()
 
-            // Use token.hashCode() as notification ID to update per-room
-            val notificationId = token.hashCode()
-            Log.d(TAG, "🔔 Creating child notification with ID $notificationId for token: $token")
+            // Add FLAG_INSISTENT like NotificationWorker
+            notification.flags = notification.flags or Notification.FLAG_INSISTENT
+            
+            // Android 14+ introduces a user setting controlling full-screen intents
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !nm.canUseFullScreenIntent()) {
+                // If permission was denied, inform the user how to enable it
+                showFullScreenPermissionGuidance()
+            }
+            
+            val notificationId = System.currentTimeMillis().toInt()
             
             if (nm.areNotificationsEnabled()) {
                 nm.notify(notificationId, notification)
@@ -548,6 +555,13 @@ class PingForegroundService : Service() {
             Log.d(TAG, "   📱 Full-screen intent: YES")
             
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            
+            // Android 14+ introduces a user setting controlling full-screen intents
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !notificationManager.canUseFullScreenIntent()) {
+                // If permission was denied, inform the user how to enable it
+                showFullScreenPermissionGuidance()
+            }
+            
             notificationManager.notify(notificationTimestamp.toInt(), notification)
             
             Log.d(TAG, "✅ Call notification created successfully")

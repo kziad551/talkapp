@@ -2353,11 +2353,10 @@ class CallActivity : CallBaseActivity() {
                 getOrCreatePeerConnectionWrapperForSessionIdAndType(sessionId, VIDEO_STREAM_TYPE_VIDEO, false)
             }
         }
-        othersInCall = if (selfJoined) {
-            joined.size > 1  // If I joined, there need to be more than 1 (including me)
-        } else {
-            joined.isNotEmpty()  // If I haven't joined yet, any participant means others are in call
-        }
+        
+        // Consider the call active if at least one participant joined
+        // or if we already joined ourselves
+        othersInCall = joined.isNotEmpty() || selfJoined
         
         Log.d(TAG, "🔍 Call participant analysis:")
         Log.d(TAG, "   👤 Self joined: $selfJoined")
