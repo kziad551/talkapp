@@ -277,6 +277,33 @@ class PingForegroundService : Service() {
                     showCall(roomName, token, callFlag, callStart)
                     callMemorised[token] = callStart
                     somethingNew = true
+                } else if (!hasCall && callFlag == 0 && callStart == 0L && callMemorised.containsKey(token)) {
+                    // 🔧 PERSISTENT RINGING FIX: Cancel any existing call notifications if call ended
+                    Log.d(TAG, "🔕 Call ended for room '$roomName' - canceling any lingering call notifications")
+                    try {
+                        val currentUser = currentUserProvider.currentUser.blockingGet()
+                        NotificationUtils.cancelExistingNotificationsForRoom(
+                            applicationContext,
+                            currentUser,
+                            token
+                        )
+                        
+                        // Also cancel notifications using timestamp-based IDs (PingForegroundService style)
+                        val nm = getSystemService(NotificationManager::class.java)
+                        val lastCallStart = callMemorised[token] ?: 0L
+                        if (lastCallStart > 0L) {
+                            val callNotificationId = lastCallStart.toInt()
+                            nm.cancel(callNotificationId)
+                            Log.d(TAG, "🔕 Canceled timestamp-based call notification ID: $callNotificationId")
+                        }
+                        
+                        // Remove from memory since call ended
+                        callMemorised.remove(token)
+                        somethingNew = true
+                        Log.d(TAG, "✅ Call cleanup completed for room '$roomName'")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "⚠️ Error during call notification cleanup: ${e.message}")
+                    }
                 }
                 
                 Log.d(TAG, "🏠 Room #$i: token='$token', name='$roomName', unreadMessages=$unread")

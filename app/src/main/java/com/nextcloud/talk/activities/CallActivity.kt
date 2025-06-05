@@ -12,6 +12,7 @@ import android.Manifest
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.annotation.SuppressLint
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.RemoteAction
 import android.content.BroadcastReceiver
@@ -108,6 +109,7 @@ import com.nextcloud.talk.utils.CapabilitiesUtil
 import com.nextcloud.talk.utils.CapabilitiesUtil.hasSpreedFeatureCapability
 import com.nextcloud.talk.utils.CapabilitiesUtil.isCallRecordingAvailable
 import com.nextcloud.talk.utils.DisplayUtils
+import com.nextcloud.talk.utils.NotificationUtils
 import com.nextcloud.talk.utils.NotificationUtils.cancelExistingNotificationsForRoom
 import com.nextcloud.talk.utils.NotificationUtils.getCallRingtoneUri
 import com.nextcloud.talk.utils.ReceiverFlag
@@ -1720,6 +1722,31 @@ class CallActivity : CallBaseActivity() {
                             if (!hasExternalSignalingServer) {
                                 pullSignalingMessages()
                             }
+                            
+                            // 🔧 CRITICAL FIX: For incoming calls from notifications, immediately transition to IN_CONVERSATION
+                            // This prevents the 45-second timeout while the call is already working
+                            if (isIncomingCallFromNotification) {
+                                Log.d(TAG, "🚨 INCOMING CALL FIX: Immediately transitioning to IN_CONVERSATION")
+                                Log.d(TAG, "   📞 Reason: This is an incoming call that's already active")
+                                Log.d(TAG, "   ⏰ Preventing 45s timeout while call is working")
+                                
+                                // 🔧 FIRST CALL FIX: Add longer delay for first call to allow proper initialization
+                                val isFirstCall = ApplicationWideCurrentRoomHolder.getInstance().callStartTime == 0L
+                                val delayTime = if (isFirstCall) {
+                                    Log.d(TAG, "🆕 First call detected - using longer initialization delay")
+                                    5000L // 5 seconds for first call to allow full initialization
+                                } else {
+                                    2000L // 2 seconds for subsequent calls
+                                }
+                                
+                                // Force immediate transition to IN_CONVERSATION for incoming calls
+                                handler!!.postDelayed({
+                                    if (currentCallStatus === CallStatus.JOINED) {
+                                        Log.d(TAG, "🎯 Executing delayed transition to IN_CONVERSATION for incoming call")
+                                        setCallState(CallStatus.IN_CONVERSATION)
+                                    }
+                                }, delayTime)
+                            }
                         }
                     }
 
@@ -2043,14 +2070,49 @@ class CallActivity : CallBaseActivity() {
     }
 
     private fun hangup(shutDownView: Boolean, endCallForAll: Boolean) {
-        Log.d(TAG, "hangup! shutDownView=$shutDownView")
+        Log.d(TAG, "🔚 hangup() called - shutDownView: $shutDownView, endCallForAll: $endCallForAll")
+        
+        // 🔧 PERSISTENT RINGING FIX: Ensure all call notifications are canceled when hanging up
+        try {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            
+            // Cancel all active call notifications to stop persistent ringing
+            if (!TextUtils.isEmpty(roomToken)) {
+                Log.d(TAG, "🔕 Canceling all call notifications for room: $roomToken")
+                
+                // Cancel notifications by room token (for NotificationWorker style notifications)
+                NotificationUtils.cancelExistingNotificationsForRoom(
+                    applicationContext,
+                    conversationUser!!,
+                    roomToken!!
+                )
+                
+                // Also cancel any lingering call notifications from PingForegroundService
+                // These use timestamp-based IDs, so we need a broader approach
+                try {
+                    // Cancel recent notifications that might be call-related (last 60 seconds)
+                    val currentTime = System.currentTimeMillis()
+                    for (i in 0..60) {
+                        val notificationId = (currentTime - (i * 1000)).toInt()
+                        notificationManager.cancel(notificationId)
+                    }
+                    Log.d(TAG, "🔕 Attempted to cancel recent timestamp-based call notifications")
+                } catch (e: Exception) {
+                    Log.w(TAG, "⚠️ Error canceling timestamp-based notifications: ${e.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error during notification cleanup: ${e.message}", e)
+        }
+        
         if (shutDownView) {
             setCallState(CallStatus.LEAVING)
         }
+        
         stopCallingSound()
         callTimeHandler.removeCallbacksAndMessages(null)
         dispose(null)
-
+        
         if (shutDownView) {
             terminateAudioVideo()
         }
@@ -2365,16 +2427,24 @@ class CallActivity : CallBaseActivity() {
         Log.d(TAG, "   🎯 Current call status: $currentCallStatus")
         Log.d(TAG, "   📞 From notification: $isIncomingCallFromNotification")
         
-        // For incoming calls from notifications, we should transition to IN_CONVERSATION 
-        // if we detect any participants (including ourselves) actively in the call
+        // 🔧 ADDITIONAL FIX: Force transition for incoming calls that are working but stuck in JOINED
         if (isIncomingCallFromNotification && currentCallStatus === CallStatus.JOINED) {
-            Log.d(TAG, "   🚨 Incoming call analysis:")
-            Log.d(TAG, "     📊 Total joined participants: ${joined.size}")
+            Log.d(TAG, "🚨 INCOMING CALL SAFETY CHECK:")
+            Log.d(TAG, "   📊 Total joined participants: ${joined.size}")
+            Log.d(TAG, "   👤 Self joined: $selfJoined")
             
-            // If we have any active participants (meaning the call is active), transition to IN_CONVERSATION
-            if (joined.size > 0) {
-                Log.d(TAG, "   ✅ Detected active call with participants, transitioning to IN_CONVERSATION")
-                othersInCall = true  // Force transition for incoming calls
+            // If this is an incoming call and we detect ANY activity, force transition
+            if (joined.size > 0 || selfJoined) {
+                Log.d(TAG, "   ✅ Forcing transition to IN_CONVERSATION (incoming call safety)")
+                othersInCall = true
+                
+                // Immediate transition for incoming calls with any participant activity
+                handler!!.post {
+                    if (currentCallStatus === CallStatus.JOINED) {
+                        Log.d(TAG, "🎯 SAFETY: Executing immediate transition for incoming call")
+                        setCallState(CallStatus.IN_CONVERSATION)
+                    }
+                }
             }
         }
     }
